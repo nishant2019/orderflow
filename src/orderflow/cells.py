@@ -86,6 +86,7 @@ class Glyph:
     color: str  # dominant ink colour: black | red | blue
     mask: np.ndarray  # bool, bbox-shaped
     soft: np.ndarray | None = None  # float 0..1 ink coverage, bbox-shaped
+    rel_y: float = 0.0  # glyph top below the text line's top, in px (separates '.' from '-')
 
 
 TYPICAL_W = 0.8  # digit width as a fraction of digit height (typical across the shots)
@@ -113,18 +114,18 @@ def _remove_non_text(union: np.ndarray, glyph_h: float) -> np.ndarray:
     return out
 
 
-def _keep_text_band(union: np.ndarray, glyph_h: float) -> np.ndarray:
+def _keep_text_band(union: np.ndarray, glyph_h: float) -> tuple[np.ndarray, int]:
     """Keep only the rows of the one text line (a window one glyph tall); bar edges and
     gridline fragments above/below it are dropped."""
     rows = union.sum(axis=1)
     h = int(round(glyph_h))
     if len(rows) <= h:
-        return union
+        return union, 0
     sums = np.convolve(rows, np.ones(h + 1), mode="valid")
     y0 = int(sums.argmax())
     out = np.zeros_like(union)
     out[y0 : y0 + h + 1] = union[y0 : y0 + h + 1]
-    return out
+    return out, y0
 
 
 def _column_runs(cols: np.ndarray) -> list[tuple[int, int]]:
@@ -194,7 +195,7 @@ def segment_glyphs(
     for m in masks.values():
         union |= m
     union = _remove_non_text(union, glyph_h)
-    union = _keep_text_band(union, glyph_h)
+    union, band_top = _keep_text_band(union, glyph_h)
     proj = union.sum(axis=0)
     typ_w = TYPICAL_W * glyph_h
     out = []
@@ -209,7 +210,7 @@ def segment_glyphs(
             mask = sub[y0:y1]
             counts = {c: int((m[y0:y1, x0:x1] & mask).sum()) for c, m in masks.items()}
             patch = None if soft is None else soft[y0:y1, x0:x1] * mask
-            out.append(Glyph(x0, y0, x1 - x0, y1 - y0, max(counts, key=counts.get), mask, patch))
+            out.append(Glyph(x0, y0, x1 - x0, y1 - y0, max(counts, key=counts.get), mask, patch, float(y0 - band_top)))
     return _drop_strays(out, glyph_h)
 
 
@@ -220,7 +221,8 @@ def _drop_strays(glyphs: list[Glyph], glyph_h: float) -> list[Glyph]:
     """Remove candle-fringe slivers and isolated specks. A period always sits between two
     glyphs, so a dot-sized glyph without neighbours on both sides is noise. A cell made
     only of dots (the chart's "..." ellipsis) is left untouched."""
-    is_dot = [g.h <= 0.4 * glyph_h and g.w <= 0.5 * glyph_h for g in glyphs]
+    # a period is small and roughly square; a minus sign is about 3:1
+    is_dot = [g.h <= 0.4 * glyph_h and g.w <= 0.5 * glyph_h and g.w <= 2 * g.h for g in glyphs]
     if glyphs and all(is_dot):
         return glyphs if len(glyphs) >= 3 else []  # "..." is an ellipsis; a lone speck is noise
     out = []
@@ -250,6 +252,7 @@ def _drop_far_ends(glyphs: list[Glyph], glyph_h: float) -> list[Glyph]:
 
 
 FEAT_H, FEAT_W = 14, 10
+EXTRA_WEIGHT = 6.0  # weight of size/position features against the 140 shape values
 
 
 def estimate_glyph_height(img: np.ndarray, rects: list[CellRect], pitch: float) -> int:
@@ -267,7 +270,9 @@ def glyph_features(glyph: Glyph, glyph_h: float) -> np.ndarray:
     """Size-normalised shape vector: resized bbox plus width and height relative to a digit."""
     source = glyph.mask.astype(np.float32) if glyph.soft is None else glyph.soft
     shape = cv2.resize(source, (FEAT_W, FEAT_H), interpolation=cv2.INTER_AREA)
-    extra = np.array([glyph.w / glyph_h * 4.0, glyph.h / glyph_h * 4.0], dtype=np.float32)
+    extra = np.array(
+        [glyph.w / glyph_h * EXTRA_WEIGHT, glyph.h / glyph_h * EXTRA_WEIGHT, glyph.rel_y / glyph_h * EXTRA_WEIGHT], dtype=np.float32
+    )
     return np.concatenate([shape.ravel(), extra])
 
 
@@ -301,11 +306,22 @@ class CellText:
     buy_imbalance: bool  # ask drawn in blue
     ellipsis: bool  # chart printed "..." (cell too small for text)
     confidence: float  # 0..1; low when glyphs matched poorly or the text did not parse
+    bid_tol: float = 0.0  # half the last displayed digit: 3.5K is +-50, 326 is +-0.5
+    ask_tol: float = 0.0
 
 
 _NUM = re.compile(r"^(\d+(?:\.\d+)?)([KM]?)$")
 _SCALE = {"": 1.0, "K": 1e3, "M": 1e6}
 GOOD_DIST = 2.0  # nearest-neighbour distance at which a glyph is considered a clean match
+
+
+def display_tolerance(text: str) -> float:
+    """Half a unit of the last displayed digit, in volume units."""
+    m = _NUM.match(text)
+    if not m:
+        return 0.0
+    decimals = len(m.group(1).split(".")[1]) if "." in m.group(1) else 0
+    return 0.5 * 10.0 ** (-decimals) * _SCALE[m.group(2)]
 
 
 def parse_number(text: str) -> float | None:
@@ -366,4 +382,9 @@ def parse_cell(glyphs: list[Glyph], glyph_h: float, clf: GlyphClassifier) -> Cel
     left_red = sum(g.color == "red" for g in left_g) > len(left_g) / 2
     right_blue = sum(g.color == "blue" for g in right_g) > len(right_g) / 2
     quality = float(np.mean([1.0 / (1.0 + max(0.0, d - GOOD_DIST)) for d in dists[lo:hi]]))
-    return CellText("".join(chars[lo:hi]), bid, ask, left_red, right_blue, False, quality * penalty)
+    text = "".join(chars[lo:hi])
+    bid_text, ask_text = text.split("X")
+    return CellText(
+        text, bid, ask, left_red, right_blue, False, quality * penalty,
+        display_tolerance(bid_text), display_tolerance(ask_text),
+    )
