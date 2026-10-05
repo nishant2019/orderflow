@@ -1,0 +1,222 @@
+import json
+from pathlib import Path
+
+import pytest
+
+from orderflow.analytics import Thresholds, analyze, build_levels, stacked_imbalances, _prepare
+
+DATA = Path(__file__).parent / "data"
+
+
+def cell(price, bid, ask, buy=False, sell=False):
+    return {
+        "price": float(price), "bid": float(bid), "ask": float(ask), "total": float(bid + ask),
+        "delta": float(ask - bid), "buy_imbalance": buy, "sell_imbalance": sell,
+        "is_poc": False, "confidence": 1.0,
+    }
+
+
+def bar(index, cells, poc=None, valid=True, clipped=False, failed=()):
+    vol = sum(c["total"] for c in cells)
+    delta = sum(c["delta"] for c in cells)
+    return {
+        "index": index, "time": f"{9 + index // 2:02d}:{(index % 2) * 30:02d}", "clipped": clipped,
+        "volume": {"value": vol}, "delta": {"value": delta}, "poc_price": poc,
+        "cells": sorted(cells, key=lambda c: -c["price"]), "valid": valid, "failed_checks": list(failed),
+    }
+
+
+def doc(*bars, current=None):
+    return {
+        "source": "synthetic",
+        "price": {"step_per_row": 1.0, "current": current, "visible": {"high": 200.0, "low": 50.0}},
+        "bars": list(bars),
+    }
+
+
+def prepared(b):
+    return _prepare(doc(b), b)
+
+
+def signals(result, index, kind=None):
+    s = next(b for b in result["bars"] if b["index"] == index)["signals"]
+    return [x for x in s if kind is None or x["type"] == kind]
+
+
+# --- stacked imbalances ----------------------------------------------------------------------
+
+def test_stacked_imbalance_needs_consecutive_rows():
+    cells = [cell(p, 100, 400, buy=True) for p in (101, 102, 103, 104)] + [cell(106, 100, 400, buy=True), cell(107, 100, 400, buy=True)]
+    out = stacked_imbalances(prepared(bar(0, cells)), 1.0, Thresholds())
+    assert len(out) == 1  # 101-104 qualifies; the pair at 106-107 is too short and not adjacent
+    s = out[0]
+    assert (s["price"], s["price_to"], s["evidence"]["rows"], s["bias"]) == (101.0, 104.0, 4, "bullish")
+
+
+def test_stacked_sell_imbalance_is_bearish_and_gap_breaks_the_run():
+    cells = [cell(p, 400, 100, sell=True) for p in (100, 101, 103, 104, 105)]  # gap at 102
+    out = stacked_imbalances(prepared(bar(0, cells)), 1.0, Thresholds())
+    assert [(s["price"], s["price_to"]) for s in out] == [(103.0, 105.0)]
+    assert out[0]["bias"] == "bearish"
+
+
+def test_stack_threshold_is_configurable():
+    cells = [cell(p, 100, 400, buy=True) for p in (101, 102)]
+    assert not stacked_imbalances(prepared(bar(0, cells)), 1.0, Thresholds())
+    assert stacked_imbalances(prepared(bar(0, cells)), 1.0, Thresholds(stack_min_rows=2))
+
+
+# --- absorption and exhaustion ---------------------------------------------------------------
+
+def absorption_bar(index, low=100):
+    """Ten rows; heavy aggressive buying (ask) in the top two rows, little elsewhere."""
+    cells = [cell(low + 9, 500, 6000), cell(low + 8, 600, 5000)]
+    cells += [cell(low + k, 700, 800) for k in range(8)]
+    return bar(index, cells, poc=low + 9)
+
+
+def test_absorption_at_high_with_confirmation():
+    held = bar(1, [cell(p, 800, 700) for p in range(100, 108)])  # next bar never exceeds 109
+    res = analyze(doc(absorption_bar(0), held))
+    (sig,) = signals(res, 0, "absorption")
+    assert (sig["bias"], sig["location"], sig["price"]) == ("bearish", "high", 109.0)
+    assert sig["confirmation"] == "held"
+    assert sig["evidence"]["zone_delta"] > 0
+
+
+def test_absorption_broken_when_next_bar_makes_a_higher_high():
+    higher = bar(1, [cell(p, 800, 700) for p in range(105, 114)])
+    (sig,) = signals(analyze(doc(absorption_bar(0), higher)), 0, "absorption")
+    assert sig["confirmation"] == "broken"
+
+
+def test_no_absorption_without_one_sided_aggression():
+    cells = [cell(109, 3000, 3100), cell(108, 3000, 3000)] + [cell(100 + k, 700, 800) for k in range(8)]
+    assert not signals(analyze(doc(bar(0, cells, poc=109))), 0, "absorption")
+
+
+def test_absorption_needs_more_than_an_even_spread():
+    """With 4 rows the top two hold half the volume by chance alone; that is not absorption."""
+    cells = [cell(103, 100, 1300), cell(102, 100, 1300), cell(101, 100, 1300), cell(100, 100, 1300)]
+    assert not signals(analyze(doc(bar(0, cells, poc=103))), 0, "absorption")
+
+
+def test_bullish_absorption_at_low():
+    cells = [cell(100, 6000, 500), cell(101, 5000, 600)] + [cell(102 + k, 800, 700) for k in range(8)]
+    (sig,) = signals(analyze(doc(bar(0, cells, poc=100))), 0, "absorption")
+    assert (sig["bias"], sig["location"]) == ("bullish", "low")
+
+
+def test_exhaustion_volume_thinning_into_the_high():
+    cells = [cell(109, 0, 40), cell(108, 200, 400), cell(107, 800, 1500)] + [cell(100 + k, 3000, 4000) for k in range(7)]
+    (sig,) = signals(analyze(doc(bar(0, cells, poc=105))), 0, "exhaustion")
+    assert (sig["bias"], sig["location"], sig["price"]) == ("bearish", "high", 109.0)
+    assert sig["evidence"]["taper"] == [40.0, 600.0, 2300.0]
+
+
+def test_unfinished_vs_finished_extreme():
+    cells = [cell(109, 300, 500), cell(108, 800, 900)] + [cell(100 + k, 800, 700) for k in range(7)] + [cell(99, 0, 600)]
+    res = analyze(doc(bar(0, cells, poc=105)))
+    assert signals(res, 0, "unfinished_extreme")[0]["location"] == "high"  # both sides traded at 109
+    assert signals(res, 0, "finished_extreme")[0]["location"] == "low"  # nobody sold at 99
+
+
+def test_bars_with_too_few_rows_get_no_extreme_signals():
+    res = analyze(doc(bar(0, [cell(100, 10, 20), cell(101, 20, 30)], poc=101)))
+    assert [s["type"] for s in signals(res, 0)] == ["poc"]
+
+
+# --- exclusion, partial data -----------------------------------------------------------------
+
+def test_invalid_bars_are_excluded_with_a_reason():
+    good = absorption_bar(0)
+    bad = bar(1, [cell(100, 1, 1)], valid=False, failed=["volume"])
+    clipped = bar(2, [], valid=False, clipped=True)
+    empty = bar(3, [], valid=False)
+    res = analyze(doc(good, bad, clipped, empty))
+    reasons = {b["index"]: b.get("reason") for b in res["bars"] if b["status"] == "excluded"}
+    assert reasons == {
+        1: "failed validation: volume", 2: "clipped by the image edge",
+        3: "no footprint cells in the visible price range",
+    }
+    assert res["summary"]["analyzed_bars"] == 1 and res["summary"]["excluded_bars"] == [1, 2, 3]
+
+
+def test_hidden_cells_reduce_confidence_and_are_noted():
+    b = absorption_bar(0)
+    b["cells"].append({"price": 95.0, "hidden": True})
+    res = analyze(doc(b))
+    (sig,) = signals(res, 0, "absorption")
+    assert sig["confidence"] == 0.7
+    assert any("hidden" in n for n in res["bars"][0]["notes"])
+
+
+def test_view_edge_is_noted():
+    b = bar(0, [cell(p, 800, 700) for p in range(195, 201)], poc=197)
+    assert any("edge" in n for n in analyze(doc(b))["bars"][0]["notes"])
+
+
+# --- levels ----------------------------------------------------------------------------------
+
+def test_levels_merge_nearby_prices_and_assign_roles():
+    analysed = [
+        {"index": 0, "stats": {"range": [90, 120]}, "signals": [{"type": "poc", "price": 100.0}]},
+        {"index": 1, "stats": {"range": [95, 125]}, "signals": [{"type": "poc", "price": 101.0}]},
+        {"index": 2, "stats": {"range": [90, 99]}, "signals": [{"type": "poc", "price": 110.0}]},
+    ]
+    levels = build_levels(analysed, 1.0, current=105.0, cfg=Thresholds())
+    assert len(levels) == 2
+    low, high = sorted(levels, key=lambda lv: lv["price"])
+    assert low["price"] in (100.0, 101.0) and low["role"] == "support" and low["bars"] == [0, 1]
+    # merged price 100.5 snaps to 100; only bar 1 (95-125) retests it, bar 2 (90-99) stops short
+    assert low["strength"] == 2.0 and low["retests"] == 1
+    assert high["role"] == "resistance" and high["distance_steps"] == 5.0
+
+
+def test_level_retests_count_later_bars_touching_the_price():
+    analysed = [
+        {"index": 0, "stats": {"range": [95, 105]}, "signals": [{"type": "poc", "price": 100.0}]},
+        {"index": 1, "stats": {"range": [98, 103]}, "signals": []},
+        {"index": 2, "stats": {"range": [110, 115]}, "signals": []},
+    ]
+    (level,) = build_levels(analysed, 1.0, current=None, cfg=Thresholds())
+    assert level["retests"] == 1 and "role" not in level
+
+
+# --- integration on the real screenshots -----------------------------------------------------
+
+@pytest.fixture(scope="module")
+def real():
+    from orderflow.assemble import parse_screenshot
+    from orderflow.models import load_classifiers
+
+    m = load_classifiers()
+    return {n: parse_screenshot(DATA / f"shot{n}.png", m) for n in range(1, 6)}
+
+
+def test_real_screenshots_analyse_and_serialise(real):
+    for n, d in real.items():
+        a = analyze(d)
+        assert json.loads(json.dumps(a)) == a
+        assert a["summary"]["analyzed_bars"] == d["summary"]["valid_bars"], n
+
+
+def test_real_exclusions_follow_validation(real):
+    assert analyze(real[1])["summary"]["excluded_bars"] == [11]
+    assert analyze(real[5])["summary"]["excluded_bars"] == [0, 1]
+
+
+def test_shot2_known_signals(real):
+    a = analyze(real[2])
+    bar0 = signals(a, 0)
+    stack = [s for s in bar0 if s["type"] == "stacked_imbalance"]
+    assert [(s["price"], s["price_to"]) for s in stack] == [(496.0, 498.0)]  # 496/497/498 all buy-imbalanced
+    assert [s["location"] for s in bar0 if s["type"] == "unfinished_extreme"] == ["high"]
+    (ex,) = signals(a, 3, "exhaustion")  # '0 X 3' at the high of the last bar
+    assert (ex["bias"], ex["price"]) == ("bearish", 505.0)
+
+
+def test_thresholds_change_results(real):
+    strict = analyze(real[3], Thresholds(absorption_min_share=0.9))
+    default = analyze(real[3])
+    assert strict["summary"]["signal_counts"].get("absorption:bearish", 0) < default["summary"]["signal_counts"]["absorption:bearish"]

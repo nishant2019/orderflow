@@ -152,6 +152,11 @@ def parse_screenshot(path: str | Path, models: Classifiers | None = None) -> dic
             "step_per_row": geo.grid.price_step,
             "row_height_px": round(geo.grid.pitch, 3),
             "current": None if line is None else round(line.price, 3),
+            # bars extending beyond this range are cut off by the view
+            "visible": {
+                "high": geo.grid.row_price(geo.k_first, geo.axis),
+                "low": geo.grid.row_price(geo.k_last, geo.axis),
+            },
         },
         "bars": bars,
         "profile": profile,
