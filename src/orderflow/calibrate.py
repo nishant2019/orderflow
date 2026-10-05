@@ -13,16 +13,28 @@ WHITE_THRESHOLD = 235  # a pixel with min(B, G, R) below this is "ink"
 RIGHT_STRIP = 110  # right-hand label strip excluded when scanning rows
 MIN_TABLE_HEIGHT = 40
 MIN_PITCH, MAX_PITCH = 60, 320
+CLIP_MARGIN = 20  # table starting this close to the image's left edge is clipped
 
 
 @dataclass(frozen=True)
 class TableGeometry:
     y_top: int
     y_bottom: int  # inclusive
-    x_left: int
-    x_right: int  # inclusive
-    pitch: float  # column width in px
-    n_cols: int
+    col_edges: tuple[int, ...]  # x of each column boundary, left to right
+    pitch: float  # nominal column width in px
+    first_clipped: bool  # leftmost column is cut by the image edge
+
+    @property
+    def n_cols(self) -> int:
+        return len(self.col_edges) - 1
+
+    @property
+    def x_left(self) -> int:
+        return self.col_edges[0]
+
+    @property
+    def x_right(self) -> int:
+        return self.col_edges[-1] - 1
 
     @property
     def row_height(self) -> float:
@@ -34,8 +46,8 @@ class TableGeometry:
         return round(self.y_top + row * h), round(self.y_top + (row + 1) * h)
 
     def col_x(self, col: int) -> tuple[int, int]:
-        """Pixel x-range [start, end) of bar column `col`."""
-        return round(self.x_left + col * self.pitch), round(self.x_left + (col + 1) * self.pitch)
+        """Pixel x-range [start, end) of bar column `col` (the first may be clipped)."""
+        return self.col_edges[col], self.col_edges[col + 1]
 
 
 def _contiguous(ys: list[int]) -> list[tuple[int, int]]:
@@ -80,36 +92,36 @@ def _boundary_candidates(img: np.ndarray, y0: int, y1: int, x0: int, x1: int) ->
         line = img[y, x0 : x1 + 2].astype(int)
         jump = np.abs(np.diff(line, axis=0)).sum(axis=1)
         found.extend((np.where(jump > 12)[0] + 1 + x0).tolist())
-    return np.array(sorted(set(found)), dtype=float)
+    # a colour transition spans 1-3 px; merge each cluster to its mean position
+    clusters: list[list[int]] = []
+    for x in sorted(set(found)):
+        if clusters and x - clusters[-1][-1] <= 3:
+            clusters[-1].append(x)
+        else:
+            clusters.append([x])
+    return np.array([np.mean(c) for c in clusters], dtype=float)
 
 
-def _fit_pitch(bounds: np.ndarray, x0: int, span: int) -> float:
-    """Largest pitch p in range such that every boundary sits near x0 + k*p."""
-    best_p, best_err = None, None
-    for p in np.arange(MIN_PITCH, min(MAX_PITCH, span) + 0.01, 0.25):
-        k = np.round((bounds - x0) / p)
-        err = np.abs(bounds - (x0 + k * p))
-        if len(bounds) and np.median(err) > 1.5:
-            continue
-        frac = (err < 2.0).mean() if len(bounds) else 1.0
-        if frac < 0.9:
-            continue
-        n = span / p
-        if abs(n - round(n)) > 0.06:
-            continue
-        # Prefer the coarsest consistent grid (a finer one would also fit).
-        if best_p is None or p > best_p + 0.5:
-            best_p, best_err = float(p), err
-    if best_p is None:
-        raise ValueError("could not fit column pitch")
-    return best_p
+def _fit_pitch(bounds: np.ndarray) -> float:
+    """Largest pitch p such that every boundary sits near bounds[0] + k*p."""
+    for p in np.arange(MAX_PITCH, MIN_PITCH - 0.01, -0.25):
+        err = np.abs((bounds - bounds[0]) / p - np.round((bounds - bounds[0]) / p)) * p
+        if err.max() < 2.0:
+            return float(p)
+    raise ValueError("could not fit column pitch")
 
 
 def calibrate_table(img: np.ndarray) -> TableGeometry:
     y0, y1 = find_table_rows(img)
     x0, x1 = _x_extent(img, y0, y1)
-    span = x1 - x0 + 1
-    bounds = _boundary_candidates(img, y0, y1, x0, x1)
-    bounds = bounds[(bounds > x0 + 20) & (bounds < x1 - 20)]
-    pitch = _fit_pitch(bounds, x0, span)
-    return TableGeometry(y0, y1, x0, x1, pitch, round(span / pitch))
+    clipped = x0 <= CLIP_MARGIN  # table runs off the left edge of the image
+    inner = _boundary_candidates(img, y0, y1, x0, x1)
+    inner = inner[(inner > x0 + 20) & (inner < x1 - 20)]
+    anchors = np.concatenate([[] if clipped else [x0], inner, [x1 + 1]])
+    if len(anchors) < 2:
+        raise ValueError("could not fit column pitch")
+    pitch = _fit_pitch(anchors)
+    origin = anchors[0]
+    ks = np.arange(-int(np.ceil((origin - x0) / pitch)), int((x1 + 1 - origin) / pitch + 0.5) + 1)
+    edges = [int(round(origin + k * pitch)) for k in ks if x0 + 20 < origin + k * pitch < x1 - 20]
+    return TableGeometry(y0, y1, tuple([x0, *edges, x1 + 1]), pitch, clipped)
