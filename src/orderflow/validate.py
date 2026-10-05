@@ -8,12 +8,15 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 
+import numpy as np
+
 from .cells import CellText, display_tolerance, parse_cell, GlyphClassifier
 from .pipeline import ShotGeometry
 from .poc import find_poc_rows
 from .table import TableColumn
 
 SLACK = 1.0  # absolute volume units added to every tolerance
+LENGTH_REL_TOL = 0.10  # bar length vs fitted scale: catches gross misreads, not rounding
 
 
 @dataclass(frozen=True)
@@ -127,3 +130,75 @@ def _check_cum_chain(reports: list[ColumnReport], table: list[TableColumn]) -> N
             reports[c].checks.append(
                 Check("cum", "fail", f"prev cum {table[c-1].cum.value:.0f} + delta {tcol.delta.value:.0f} != {tcol.cum.value:.0f}")
             )
+
+
+@dataclass(frozen=True)
+class ProfileCheck:
+    row: int
+    price: float
+    raw: str
+    checks: list[Check]
+
+    @property
+    def ok(self) -> bool:
+        return all(c.status != "fail" for c in self.checks)
+
+
+def validate_profile(profile: list, reports: list[ColumnReport]) -> list[ProfileCheck]:
+    """Check each profile row's printed delta against its bar and against the cells.
+
+    * sign:   the text sign must match the bar colour (no bar <=> zero or tiny value);
+    * length: bar length is proportional to |value| (scale fitted from the rows themselves);
+    * cells:  the value equals the sum of (ask - bid) over every bar's cell on that row.
+    """
+    from .table import parse_signed  # local import: table imports cells, avoiding a cycle at import time
+
+    # per-row sums over all bars; a row with an unreadable or "..." cell has unknown total
+    sums: dict[int, float] = {}
+    tols: dict[int, float] = {}
+    unknown: set[int] = set()
+    for rep in reports:
+        for row, cell in rep.cells:
+            if cell.ellipsis or cell.bid is None:
+                unknown.add(row)
+                continue
+            sums[row] = sums.get(row, 0.0) + cell.ask - cell.bid
+            tols[row] = tols.get(row, 0.0) + cell.bid_tol + cell.ask_tol
+
+    scale_samples = [
+        r.length_px / abs(r.value) for r in profile if r.value and abs(r.value) >= 1000 and r.length_px >= 15
+    ]
+    scale = float(np.median(scale_samples)) if scale_samples else None
+
+    out = []
+    for r in profile:
+        checks: list[Check] = []
+        out.append(ProfileCheck(r.row, r.price, r.raw, checks))
+        if r.value is None:
+            if r.raw or r.sign:
+                checks.append(Check("text", "fail", f"unreadable profile text '{r.raw}'"))
+            continue
+        tol_text = table_tolerance(r.raw)
+        if r.value != 0 and r.sign != 0 and (r.value > 0) != (r.sign > 0):
+            checks.append(Check("sign", "fail", f"text {r.raw} but bar is {'green' if r.sign > 0 else 'red'}"))
+        elif r.value == 0 and r.sign != 0:
+            checks.append(Check("sign", "fail", "zero value but a bar is drawn"))
+        else:
+            checks.append(Check("sign", "ok"))
+        if scale and abs(r.value) >= 1000:
+            expect = scale * abs(r.value)
+            slack = 3.0 + LENGTH_REL_TOL * expect + scale * tol_text
+            ok = abs(r.length_px - expect) <= slack
+            checks.append(Check("length", "ok" if ok else "fail", f"bar {r.length_px}px, expected {expect:.0f}px for {r.raw}"))
+        if r.row in unknown:
+            checks.append(Check("cells", "skip", "a cell on this row is unreadable or hidden"))
+        elif r.row in sums:
+            allowed = tols[r.row] + tol_text + SLACK
+            diff = sums[r.row] - r.value
+            checks.append(
+                Check("cells", "ok" if abs(diff) <= allowed else "fail",
+                      f"cells {sums[r.row]:.0f} vs profile {r.value:.0f} (tol {allowed:.0f})")
+            )
+        else:
+            checks.append(Check("cells", "ok" if abs(r.value) <= tol_text + SLACK else "fail", "no cells on this row"))
+    return out
