@@ -202,3 +202,38 @@ def validate_profile(profile: list, reports: list[ColumnReport]) -> list[Profile
         else:
             checks.append(Check("cells", "ok" if abs(r.value) <= tol_text + SLACK else "fail", "no cells on this row"))
     return out
+
+
+def validate_candles(candles: list, traded_prices: list[list[float]], step: float, price_per_px: float,
+                     new_session: list[bool]) -> list[list[Check]]:
+    """Checks on each bar's OHLC.
+
+    * continuity: the open chains from the previous close (not across a new session, where
+      overnight gaps are normal);
+    * range: the candle's high and low cover the highest and lowest rows that traded
+      (a side whose wick runs off the visible plot is not checked).
+    `traded_prices[i]` are the row prices with volume in bar i.
+    """
+    from .candles import bucket
+
+    out: list[list[Check]] = []
+    for i, candle in enumerate(candles):
+        checks: list[Check] = []
+        out.append(checks)
+        if candle is None:
+            continue
+        prev = candles[i - 1] if i > 0 else None
+        if prev is not None and not new_session[i]:
+            gap = candle.open - prev.close
+            tol = 0.8 * step + 2 * price_per_px
+            checks.append(Check("continuity", "ok" if abs(gap) <= tol else "fail",
+                                f"open {candle.open:.2f} vs previous close {prev.close:.2f} (gap {gap:+.2f}, tol {tol:.2f})"))
+        else:
+            checks.append(Check("continuity", "skip", "first bar or new session"))
+        if traded_prices[i]:
+            top, bottom = max(traded_prices[i]), min(traded_prices[i])
+            high_ok = candle.high_clipped or bucket(candle.high, step, price_per_px) >= top - 1e-6
+            low_ok = candle.low_clipped or bucket(candle.low, step, price_per_px) <= bottom + 1e-6
+            checks.append(Check("range", "ok" if high_ok and low_ok else "fail",
+                                f"candle {candle.low:.2f}-{candle.high:.2f} vs traded rows {bottom:g}-{top:g}"))
+    return out

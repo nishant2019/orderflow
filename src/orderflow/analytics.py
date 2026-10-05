@@ -5,9 +5,9 @@ with the reason they were excluded. Values are as displayed on the chart (rounde
 threshold is deliberately coarse. All rules are heuristics with documented, tunable thresholds
 (`Thresholds`); each signal carries its numeric evidence so a trader can judge it.
 
-Not available from the screenshot (yet): per-bar open/close. "Extremes" are therefore the
-highest and lowest rows that traded, and absorption is judged by volume and delta at those rows,
-confirmed (or not) by the next bar.
+Each bar's candle (open/high/low/close, when it passed validation) adds direction, close
+location, wick rejection and delta divergence, and sharpens absorption confirmation. Without a
+valid candle the rules fall back to the highest and lowest rows that traded.
 """
 from __future__ import annotations
 
@@ -26,6 +26,9 @@ class Thresholds:
     absorption_vs_uniform: float = 1.5  # zone share must also exceed this x its share if volume were spread evenly
     exhaustion_max_extreme_ratio: float = 0.20  # extreme row total vs the POC row total
     taper_rows: int = 3  # rows that must thin out towards the extreme
+    rejection_min_wick_share: float = 0.5  # wick as a share of the candle range
+    divergence_min_delta_ratio: float = 0.05  # |bar delta| / bar volume
+    divergence_min_body_share: float = 0.25  # body as a share of the range (not a doji)
     level_merge_steps: float = 1.5  # price levels closer than this (in row steps) are merged
     partial_confidence: float = 0.7  # confidence factor for bars with hidden "..." cells
 
@@ -41,6 +44,7 @@ class _Bar:
     delta: float | None
     partial: bool
     touches_view_edge: bool
+    ohlc: dict | None = None  # validated candle, or None
 
 
 def _step(doc: dict) -> float:
@@ -49,6 +53,7 @@ def _step(doc: dict) -> float:
 
 def _prepare(doc: dict, bar: dict) -> _Bar:
     readable = [c for c in bar["cells"] if "bid" in c]
+    ohlc = bar.get("ohlc")
     visible = doc["price"].get("visible")
     prices = [c["price"] for c in readable]
     edge = bool(visible and prices and (max(prices) >= visible["high"] or min(prices) <= visible["low"]))
@@ -62,6 +67,7 @@ def _prepare(doc: dict, bar: dict) -> _Bar:
         delta=bar["delta"]["value"],
         partial=any(c.get("hidden") for c in bar["cells"]),
         touches_view_edge=edge,
+        ohlc=ohlc if ohlc and ohlc["valid"] else None,
     )
 
 
@@ -134,7 +140,10 @@ def extreme_signals(bar: _Bar, nxt: _Bar | None, cfg: Thresholds, step: float) -
         needed = max(cfg.absorption_min_share, cfg.absorption_vs_uniform * len(zone) / len(bar.rows))
         if share >= needed and aggressive_ok:
             confirmation = None
-            if nxt is not None and nxt.rows:
+            if nxt is not None and nxt.ohlc:  # the next bar's real high/low
+                held = nxt.ohlc["high_row"] <= extreme["price"] if top else nxt.ohlc["low_row"] >= extreme["price"]
+                confirmation = "held" if held else "broken"
+            elif nxt is not None and nxt.rows:  # fall back to the rows that traded
                 held = (max(c["price"] for c in nxt.rows) <= extreme["price"] + step * 0.5) if top else (
                     min(c["price"] for c in nxt.rows) >= extreme["price"] - step * 0.5)
                 confirmation = "held" if held else "broken"
@@ -168,6 +177,38 @@ def extreme_signals(bar: _Bar, nxt: _Bar | None, cfg: Thresholds, step: float) -
     return signals
 
 
+def candle_signals(bar: _Bar, cfg: Thresholds) -> list[dict]:
+    """Signals that need the bar's open/close: wick rejection and delta divergence."""
+    o = bar.ohlc
+    if not o:
+        return []
+    rng = o["high"] - o["low"]
+    if rng <= 0:
+        return []
+    out: list[dict] = []
+    top_body, bottom_body = max(o["open"], o["close"]), min(o["open"], o["close"])
+    upper, lower = (o["high"] - top_body) / rng, (bottom_body - o["low"]) / rng
+    body = (top_body - bottom_body) / rng
+    if upper >= cfg.rejection_min_wick_share and not o["high_clipped"]:
+        out.append(_signal("rejection", "bearish", "high", o["high_row"], upper,
+                           {"wick_share": round(upper, 3), "close_location": round((o["close"] - o["low"]) / rng, 3)},
+                           "long upper wick: higher prices were rejected"))
+    if lower >= cfg.rejection_min_wick_share and not o["low_clipped"]:
+        out.append(_signal("rejection", "bullish", "low", o["low_row"], lower,
+                           {"wick_share": round(lower, 3), "close_location": round((o["close"] - o["low"]) / rng, 3)},
+                           "long lower wick: lower prices were rejected"))
+    if bar.volume and body >= cfg.divergence_min_body_share:
+        ratio = bar.delta / bar.volume
+        if abs(ratio) >= cfg.divergence_min_delta_ratio and ((o["direction"] == "up" and ratio < 0) or (o["direction"] == "down" and ratio > 0)):
+            up = o["direction"] == "up"
+            out.append(_signal(
+                "delta_divergence", "bearish" if up else "bullish", "bar", o["close"], abs(ratio) / 0.3,
+                {"direction": o["direction"], "delta": bar.delta, "delta_ratio": round(ratio, 3), "body_share": round(body, 3)},
+                f"price closed {'up' if up else 'down'} but net delta was {'negative' if up else 'positive'}",
+            ))
+    return out
+
+
 def poc_signal(bar: _Bar) -> list[dict]:
     if bar.poc is None or not bar.rows:
         return []
@@ -194,6 +235,8 @@ def build_levels(bars: list[dict], step: float, current: float | None, cfg: Thre
                 points.append((price, 2.0 * s["strength"] + 0.5, "absorption", b["index"]))
             elif kind == "unfinished_extreme":
                 points.append((price, 1.0, "unfinished_extreme", b["index"]))
+            elif kind == "rejection":
+                points.append((price, 0.5 + s["strength"], "rejection", b["index"]))
     points.sort()
     clusters: list[list[tuple[float, float, str, int]]] = []
     for pt in points:
@@ -254,7 +297,10 @@ def analyze(doc: dict, cfg: Thresholds | None = None) -> dict:
             continue
         later = [u for u in usable if u.index > prep.index]
         nxt = later[0] if later and later[0].index == prep.index + 1 else None
-        signals = stacked_imbalances(prep, step, cfg) + extreme_signals(prep, nxt, cfg, step) + poc_signal(prep)
+        signals = (
+            stacked_imbalances(prep, step, cfg) + extreme_signals(prep, nxt, cfg, step)
+            + candle_signals(prep, cfg) + poc_signal(prep)
+        )
         prices = [c["price"] for c in prep.rows]
         stats = {
             "volume": prep.volume,
@@ -264,7 +310,21 @@ def analyze(doc: dict, cfg: Thresholds | None = None) -> dict:
             "traded_rows": len(prep.rows),
             "poc": prep.poc,
         }
+        if prep.ohlc:
+            o = prep.ohlc
+            rng = o["high"] - o["low"]
+            stats.update({
+                "open": o["open"], "high": o["high"], "low": o["low"], "close": o["close"],
+                "direction": o["direction"],
+                "close_location": round((o["close"] - o["low"]) / rng, 3) if rng > 0 else None,
+                "body_share": round(abs(o["close"] - o["open"]) / rng, 3) if rng > 0 else None,
+            })
         notes = []
+        if prep.ohlc and (prep.ohlc["high_clipped"] or prep.ohlc["low_clipped"]):
+            notes.append("candle wick runs off the visible plot: the true high/low is beyond it")
+        if bar.get("ohlc") and not bar["ohlc"]["valid"]:
+            notes.append("candle failed validation and was ignored: " + ", ".join(
+                c["name"] for c in bar["ohlc"]["checks"] if c["status"] == "fail"))
         if prep.partial:
             notes.append("some cells hidden by the chart (...): confidence reduced")
         if prep.touches_view_edge:

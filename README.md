@@ -21,6 +21,7 @@ result = analyze(doc, Thresholds(absorption_min_share=0.3))   # thresholds are t
 | Part | Output |
 |---|---|
 | Summary table | per bar: volume, delta, cumulative delta |
+| Candles | per bar: open, high, low, close, direction (from the thin candle at each column's left edge), wick-clipping flags |
 | Footprint cells | per bar and price: bid, ask, delta, sell/buy imbalance (red bid / blue ask on orange), POC flag, `...` hidden cells |
 | Time axis | per bar time (`HH:MM`), session starts, inferred times for date-labelled bars |
 | Price axis | pixel → price fit, rows, price step per row (e.g. 1, 0.55, 5) |
@@ -42,19 +43,22 @@ are listed under `excluded` with a reason. Every signal carries its numeric evid
 | `absorption` | at a bar's high: the top 2 rows hold >= 25% of the bar's volume (and clearly more than an even spread would) with delta >= +15% of that volume (aggressive buying that stalled) -> bearish; mirror at the low -> bullish. `confirmation`: `held` if the next bar did not extend past the extreme, `broken` if it did |
 | `exhaustion` | volume thinning over the last 3 rows into the extreme, extreme row <= 20% of the POC row |
 | `unfinished_extreme` / `finished_extreme` | both bid and ask traded at the extreme row (likely revisited) / one side is zero |
+| `rejection` | wick (not clipped by the view) is >= 50% of the candle range at the high (bearish) or low (bullish) |
+| `delta_divergence` | candle closed up on negative delta (bearish) or down on positive delta (bullish); needs a real body and |delta| >= 5% of volume |
 | `poc` | POC location in the bar's range (upper / middle / lower third) |
 | `levels` | POCs, stacked-imbalance zones, absorption and unfinished extremes merged within 1.5 rows; `strength`, `retests` by later bars, `support`/`resistance` vs the current price when one is drawn |
 
-These are heuristics, not trading advice. Open and close are not extracted yet, so "extremes" are the
-highest and lowest rows that traded and bars touching the edge of the visible price range are noted
-(their true high/low may be off-screen).
+These are heuristics, not trading advice. A bar's candle is used only when it passed validation;
+otherwise "extremes" fall back to the highest and lowest rows that traded. Bars touching the edge of the
+visible price range, or with wicks running off the plot, are noted (the true high/low may be off-screen).
 
 ## Validation (why you can trust a bar)
 
 Every bar is cross-checked against numbers the chart prints independently:
 cell Σ(bid+ask) ≈ table volume; cell Σ(ask−bid) ≈ table delta; the POC cell has the largest total;
 cum[c] = cum[c−1] + delta[c] (or a session reset); each profile row = Σ(ask−bid) of that row's cells,
-its sign matches the bar colour and its bar length is proportional to |value|. Tolerances come from the
+its sign matches the bar colour and its bar length is proportional to |value|. Each candle must chain from the
+previous close (except across a new session) and cover the rows that traded. Tolerances come from the
 displayed precision. A failed check means *this bar should not be trusted*, not which number is wrong.
 
 `summary` lists `flagged_bars` (a check failed) and `skipped_bars` (could not be checked: clipped by
@@ -67,7 +71,8 @@ the image edge, or no cells in the visible price range).
 * The live bar can sit under the translucent profile overlay; its cells are then unreadable and flagged.
 * Text clipped by an overlay (`78K X 4…`) is read as written and caught by the cell-sum checks.
 * Cells outside the visible price range are not in the screenshot.
-* Not yet extracted: per-bar OHLC (thin candle), the cumulative-delta candle pane.
+* Not yet extracted: the cumulative-delta candle pane.
+* Candle prices are measured in pixels and mapped through the price axis (about +-1 px, i.e. a few hundredths of a row). They are validated against the cells and the neighbouring bars, not against a platform export.
 * Analytics thresholds are untested against real outcomes; they are starting points to tune.
 
 ## Training data

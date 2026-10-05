@@ -16,13 +16,25 @@ def cell(price, bid, ask, buy=False, sell=False):
     }
 
 
-def bar(index, cells, poc=None, valid=True, clipped=False, failed=()):
+def ohlc(o, h, l, c, valid=True, clip_hi=False, clip_lo=False, step=1.0):
+    import math
+
+    return {
+        "open": o, "high": h, "low": l, "close": c, "direction": "up" if c >= o else "down",
+        "high_row": float(math.ceil(h / step) * step), "low_row": float(math.ceil(l / step) * step),
+        "high_clipped": clip_hi, "low_clipped": clip_lo, "valid": valid,
+        "checks": [] if valid else [{"name": "continuity", "status": "fail", "detail": "x"}],
+    }
+
+
+def bar(index, cells, poc=None, valid=True, clipped=False, failed=(), candle=None):
     vol = sum(c["total"] for c in cells)
     delta = sum(c["delta"] for c in cells)
     return {
         "index": index, "time": f"{9 + index // 2:02d}:{(index % 2) * 30:02d}", "clipped": clipped,
         "volume": {"value": vol}, "delta": {"value": delta}, "poc_price": poc,
         "cells": sorted(cells, key=lambda c: -c["price"]), "valid": valid, "failed_checks": list(failed),
+        "ohlc": candle,
     }
 
 
@@ -220,3 +232,73 @@ def test_thresholds_change_results(real):
     strict = analyze(real[3], Thresholds(absorption_min_share=0.9))
     default = analyze(real[3])
     assert strict["summary"]["signal_counts"].get("absorption:bearish", 0) < default["summary"]["signal_counts"]["absorption:bearish"]
+
+
+# --- candle-based signals --------------------------------------------------------------------
+
+def plain_cells(low=100, rows=8, bid=800, ask=700):
+    return [cell(low + k, bid, ask) for k in range(rows)]
+
+
+def test_rejection_from_a_long_upper_wick():
+    b = bar(0, plain_cells(), poc=104, candle=ohlc(103, 112, 101, 104))  # wick 8 of range 11
+    (sig,) = signals(analyze(doc(b)), 0, "rejection")
+    assert (sig["bias"], sig["location"], sig["price"]) == ("bearish", "high", 112.0)
+    assert sig["strength"] == pytest.approx(8 / 11, abs=0.01)
+
+
+def test_rejection_from_a_long_lower_wick():
+    b = bar(0, plain_cells(), poc=104, candle=ohlc(109, 110, 100, 108))
+    (sig,) = signals(analyze(doc(b)), 0, "rejection")
+    assert (sig["bias"], sig["location"]) == ("bullish", "low")
+
+
+def test_no_rejection_when_the_wick_runs_off_the_plot():
+    b = bar(0, plain_cells(), poc=104, candle=ohlc(103, 112, 101, 104, clip_hi=True))
+    assert not signals(analyze(doc(b)), 0, "rejection")
+
+
+def test_delta_divergence_up_candle_negative_delta():
+    cells = [cell(100 + k, 900, 600) for k in range(8)]  # net delta clearly negative
+    b = bar(0, cells, poc=104, candle=ohlc(101, 108, 100, 107))
+    (sig,) = signals(analyze(doc(b)), 0, "delta_divergence")
+    assert sig["bias"] == "bearish" and sig["evidence"]["delta"] < 0
+
+
+def test_delta_divergence_down_candle_positive_delta():
+    cells = [cell(100 + k, 600, 900) for k in range(8)]
+    b = bar(0, cells, poc=104, candle=ohlc(107, 108, 100, 101))
+    (sig,) = signals(analyze(doc(b)), 0, "delta_divergence")
+    assert sig["bias"] == "bullish"
+
+
+def test_no_divergence_for_agreeing_delta_or_a_doji():
+    agree = bar(0, [cell(100 + k, 600, 900) for k in range(8)], poc=104, candle=ohlc(101, 108, 100, 107))
+    doji = bar(1, [cell(100 + k, 900, 600) for k in range(8)], poc=104, candle=ohlc(104, 108, 100, 104.2))
+    res = analyze(doc(agree, doji))
+    assert not signals(res, 0, "delta_divergence") and not signals(res, 1, "delta_divergence")
+
+
+def test_invalid_candle_is_ignored_and_noted():
+    b = bar(0, plain_cells(), poc=104, candle=ohlc(103, 112, 101, 104, valid=False))
+    res = analyze(doc(b))
+    assert not signals(res, 0, "rejection")
+    assert any("failed validation" in n for n in res["bars"][0]["notes"])
+    assert "open" not in res["bars"][0]["stats"]
+
+
+def test_absorption_confirmation_uses_the_next_bars_candle():
+    # next bar's traded rows stay below the high, but its wick pokes above it: absorption broken
+    nxt = bar(1, [cell(p, 800, 700) for p in range(100, 108)], candle=ohlc(104, 111, 100, 105))
+    (sig,) = signals(analyze(doc(absorption_bar(0), nxt)), 0, "absorption")
+    assert sig["confirmation"] == "broken"
+    quiet = bar(1, [cell(p, 800, 700) for p in range(100, 108)], candle=ohlc(104, 107, 100, 105))
+    (sig,) = signals(analyze(doc(absorption_bar(0), quiet)), 0, "absorption")
+    assert sig["confirmation"] == "held"
+
+
+def test_stats_include_candle_geometry():
+    b = bar(0, plain_cells(), poc=104, candle=ohlc(102, 110, 100, 108))
+    stats = analyze(doc(b))["bars"][0]["stats"]
+    assert (stats["open"], stats["close"], stats["direction"]) == (102, 108, "up")
+    assert stats["close_location"] == pytest.approx(0.8) and stats["body_share"] == pytest.approx(0.6)

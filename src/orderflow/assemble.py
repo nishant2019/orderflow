@@ -5,6 +5,7 @@ import json
 import statistics
 from pathlib import Path
 
+from .candles import Candle, bucket, find_candles
 from .cells import CellText
 from .models import Classifiers, load_classifiers
 from .overlays import find_current_price_line
@@ -13,7 +14,7 @@ from .poc import find_poc_rows
 from .profile import read_profile
 from .table import TableColumn, read_table
 from .timeaxis import BarLabel, read_labels
-from .validate import Check, ColumnReport, ProfileCheck, validate_columns, validate_profile
+from .validate import Check, ColumnReport, ProfileCheck, validate_candles, validate_columns, validate_profile
 
 SCHEMA_VERSION = 1
 
@@ -84,9 +85,29 @@ def _table_value(cell) -> dict:
     return {"value": cell.value, "text": cell.raw}
 
 
+def _ohlc_json(candle: Candle | None, checks: list[Check], step: float, jitter: float) -> dict | None:
+    if candle is None:
+        return None
+    failed = [c.name for c in checks if c.status == "fail"]
+    return {
+        "open": round(candle.open, 3),
+        "high": round(candle.high, 3),
+        "low": round(candle.low, 3),
+        "close": round(candle.close, 3),
+        "high_row": bucket(candle.high, step, jitter),  # row price whose bucket holds the high
+        "low_row": bucket(candle.low, step, jitter),
+        "direction": candle.direction,
+        "body_px": candle.body_px,
+        "high_clipped": candle.high_clipped,  # the wick runs off the visible plot
+        "low_clipped": candle.low_clipped,
+        "checks": _checks_json(checks),
+        "valid": not failed,
+    }
+
+
 def _bar_json(
     geo: ShotGeometry, index: int, tcol: TableColumn, rep: ColumnReport, label: BarLabel,
-    time: tuple[int | None, bool], poc_row: int | None,
+    time: tuple[int | None, bool], poc_row: int | None, ohlc: dict | None = None,
 ) -> dict:
     cells = [_cell_json(geo, row, cell, row == poc_row) for row, cell in rep.cells]
     traded = [c["price"] for c in cells if c.get("total", 0) > 0]
@@ -101,6 +122,7 @@ def _bar_json(
         "volume": _table_value(tcol.volume),
         "delta": _table_value(tcol.delta),
         "cum_delta": _table_value(tcol.cum),
+        "ohlc": ohlc,
         "poc_price": None if poc_row is None else geo.grid.row_price(poc_row, geo.axis),
         "traded_range": {"low": min(traded), "high": max(traded)} if traded else None,
         "cells": sorted(cells, key=lambda c: -c["price"]),
@@ -139,8 +161,19 @@ def parse_screenshot(path: str | Path, models: Classifiers | None = None) -> dic
     profile_checks = validate_profile(profile_rows, reports)
     line = find_current_price_line(geo.img, geo.axis, y_limit=geo.table.y_top)
 
+    candles = find_candles(geo)
+    traded = [
+        [geo.grid.row_price(row, geo.axis) for row, c in rep.cells if c.bid is not None and c.bid + c.ask > 0]
+        for rep in reports
+    ]
+    candle_checks = validate_candles(
+        candles, traded, geo.grid.price_step, abs(geo.axis.slope), [lab.date is not None for lab in labels]
+    )
     bars = [
-        _bar_json(geo, i, table[i], reports[i], labels[i], times[i], poc.get(i))
+        _bar_json(
+            geo, i, table[i], reports[i], labels[i], times[i], poc.get(i),
+            _ohlc_json(candles[i], candle_checks[i], geo.grid.price_step, abs(geo.axis.slope)),
+        )
         for i in range(geo.table.n_cols)
     ]
     profile = _profile_json(profile_rows, profile_checks)
@@ -166,6 +199,7 @@ def parse_screenshot(path: str | Path, models: Classifiers | None = None) -> dic
             "flagged_bars": [b["index"] for b in bars if b["failed_checks"]],
             "skipped_bars": [b["index"] for b in bars if not b["valid"] and not b["failed_checks"]],
             "profile_rows": len(profile),
+            "flagged_ohlc": [b["index"] for b in bars if b["ohlc"] and not b["ohlc"]["valid"]],
             "flagged_profile_prices": [p["price"] for p in profile if not p["valid"]],
             "approximate": "cell volumes are as displayed (3.5K = 3500 +-50); table and profile values likewise",
         },
