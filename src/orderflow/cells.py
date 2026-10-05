@@ -311,6 +311,11 @@ def glyph_features(glyph: Glyph, glyph_h: float) -> np.ndarray:
     return np.concatenate([shape.ravel(), extra])
 
 
+CONFUSABLE = {  # digit pairs that read alike at 7-10 px; the first guess is often the wrong one of these
+    "3": "8", "8": "3 0 6 9", "0": "8", "6": "5 8", "5": "6 3", "9": "8", "7": "2 1", "2": "7", "1": "7 4", "4": "1",
+}
+
+
 class GlyphClassifier:
     """k-nearest-neighbour classifier over size-normalised glyph shapes."""
 
@@ -321,6 +326,22 @@ class GlyphClassifier:
     def load(cls) -> "GlyphClassifier":
         data = np.load(Path(__file__).parent / "data" / "cell_glyphs.npz", allow_pickle=False)
         return cls(data["features"], data["labels"])
+
+    def alternatives(self, feat: np.ndarray) -> list[str]:
+        """Other labels worth trying for this glyph: its nearest neighbours' labels plus the
+        digits it is commonly confused with."""
+        d = ((self.features - feat[None]) ** 2).sum(axis=1)
+        order = np.argsort(d)[:8]
+        best = str(self.labels[order[0]])
+        alts: list[str] = []
+        for i in order[1:]:
+            lab = str(self.labels[i])
+            if lab != best and lab not in alts and d[i] <= 2.5 * d[order[0]] + 3.0:
+                alts.append(lab)
+        for lab in CONFUSABLE.get(best, "").split():
+            if lab not in alts:
+                alts.append(lab)
+        return alts
 
     def classify(self, feat: np.ndarray) -> tuple[str, float]:
         d = ((self.features - feat[None]) ** 2).sum(axis=1)
@@ -344,6 +365,7 @@ class CellText:
     bid_tol: float = 0.0  # half the last displayed digit: 3.5K is +-50, 326 is +-0.5
     ask_tol: float = 0.0
     inferred: bool = False  # solved from the chart's totals because the text was unreadable
+    corrected_from: str = ""  # raw text before a single-glyph correction by the checksums (else empty)
 
 
 _NUM = re.compile(r"^(\d+(?:\.\d+)?)([KM]?)$")

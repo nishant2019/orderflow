@@ -13,6 +13,8 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 
+import numpy as np
+
 SCHEMA_VERSION = 1
 
 
@@ -29,6 +31,12 @@ class Thresholds:
     rejection_min_wick_share: float = 0.5  # wick as a share of the candle range
     divergence_min_delta_ratio: float = 0.05  # |bar delta| / bar volume
     divergence_min_body_share: float = 0.25  # body as a share of the range (not a doji)
+    hvn_min_ratio: float = 1.25  # profile row volume vs the median row for a high-volume node
+    lvn_max_ratio: float = 0.5  # ... and for a low-volume node (a thin spot inside the range)
+    tail_ratio: float = 0.10  # row volume vs the POC row below which the profile edge is a thin tail
+    aggressive_delta_ratio: float = 0.4  # |delta| / volume of a profile row for one-sided aggression
+    aggressive_min_volume_ratio: float = 0.25  # ... only on rows carrying at least this share of the POC row's volume
+    shape_skew: float = 0.65  # volume centroid above / below (1 - this) of the range => P / b profile
     level_merge_steps: float = 1.5  # price levels closer than this (in row steps) are merged
     partial_confidence: float = 0.7  # confidence factor for bars with hidden "..." cells
 
@@ -220,7 +228,8 @@ def poc_signal(bar: _Bar) -> list[dict]:
 
 # --- cross-bar levels --------------------------------------------------------------------------
 
-def build_levels(bars: list[dict], step: float, current: float | None, cfg: Thresholds) -> list[dict]:
+def build_levels(bars: list[dict], step: float, current: float | None, cfg: Thresholds,
+                 extra_points: list[tuple[float, float, str]] | None = None) -> list[dict]:
     """Merge POCs, stacked imbalances, absorption and unfinished extremes into price levels."""
     points: list[tuple[float, float, str, int]] = []  # (price, weight, kind, bar index)
     for b in bars:
@@ -237,6 +246,8 @@ def build_levels(bars: list[dict], step: float, current: float | None, cfg: Thre
                 points.append((price, 1.0, "unfinished_extreme", b["index"]))
             elif kind == "rejection":
                 points.append((price, 0.5 + s["strength"], "rejection", b["index"]))
+    for price, weight, kind in extra_points or []:  # e.g. the volume profile's POC / value area / nodes
+        points.append((price, weight, kind, -1))
     points.sort()
     clusters: list[list[tuple[float, float, str, int]]] = []
     for pt in points:
@@ -250,11 +261,12 @@ def build_levels(bars: list[dict], step: float, current: float | None, cfg: Thre
     ranges = {b["index"]: b["stats"].get("range") for b in bars}
     levels = []
     for c in clusters:
-        weight = sum(w for _, w, _, _ in c)
+        weight = float(sum(w for _, w, _, _ in c))
         price = sum(p * w for p, w, _, _ in c) / weight
         price = round(round(price / step) * step, 6)
-        idx = sorted({i for _, _, _, i in c})
-        later = [i for i, r in ranges.items() if r and i > min(idx) and r[0] - step / 2 <= price <= r[1] + step / 2]
+        idx = sorted({i for _, _, _, i in c if i >= 0})
+        first = min(idx) if idx else -1
+        later = [i for i, r in ranges.items() if r and i > first and r[0] - step / 2 <= price <= r[1] + step / 2]
         level = {
             "price": price,
             "strength": round(weight, 2),
@@ -334,13 +346,16 @@ def analyze(doc: dict, cfg: Thresholds | None = None) -> dict:
 
     analyzed = [b for b in out_bars if b["status"] == "analyzed"]
     # support/resistance are relative to the last close (the pink line is the profile POC, not the price)
-    levels = build_levels(analyzed, step, doc["price"].get("last_close"), cfg)
+    prof = profile_analysis(doc, cfg)
+    levels = build_levels(analyzed, step, doc["price"].get("last_close"), cfg,
+                          extra_points=profile_points(prof) if prof else None)
     return {
         "schema_version": SCHEMA_VERSION,
         "source": doc.get("source"),
         "thresholds": cfg.__dict__,
         "bars": out_bars,
         "levels": levels,
+        "profile": prof,
         "summary": {
             "analyzed_bars": len(analyzed),
             "excluded_bars": [b["index"] for b in out_bars if b["status"] == "excluded"],
@@ -356,3 +371,109 @@ def _count(bars: list[dict]) -> dict:
             key = f"{s['type']}:{s['bias']}"
             counts[key] = counts.get(key, 0) + 1
     return dict(sorted(counts.items()))
+
+
+# --- volume profile (delta | volume per price over the visible range) -------------------------
+
+def profile_analysis(doc: dict, cfg: Thresholds | None = None) -> dict | None:
+    """What the right-hand profile says: value area, nodes, thin tails, one-sided aggression, shape.
+
+    Uses only profile rows that passed validation. Returns None when the chart has no
+    delta|volume profile.
+    """
+    cfg = cfg or Thresholds()
+    if doc.get("profile_kind") != "delta_volume":
+        return None
+    rows = [r for r in doc["profile"] if r["valid"] and r["volume"] is not None and r["delta"] is not None]
+    if len(rows) < 5:
+        return None
+    rows.sort(key=lambda r: r["price"])  # ascending
+    step = doc["price"]["step_per_row"]
+    vols = np.array([r["volume"] for r in rows], dtype=float)
+    total = float(vols.sum())
+    poc_i = int(vols.argmax())
+    poc = rows[poc_i]
+    median = float(np.median(vols[vols > 0])) if (vols > 0).any() else 0.0
+    va = [r for r in rows if r["in_value_area"]]
+    last = doc["price"].get("last_close")
+
+    out: dict = {
+        "poc": {"price": poc["price"], "volume": poc["volume"], "share_of_volume": round(poc["volume"] / total, 3),
+                "delta": poc["delta"], "delta_ratio": round(poc["delta"] / poc["volume"], 3) if poc["volume"] else None},
+        "range": {"low": rows[0]["price"], "high": rows[-1]["price"], "rows": len(rows)},
+        "total_volume": total,
+        "total_delta": float(sum(r["delta"] for r in rows)),
+    }
+    out["total_delta_ratio"] = round(out["total_delta"] / total, 3) if total else None
+    if va:
+        vah, val = max(r["price"] for r in va), min(r["price"] for r in va)
+        out["value_area"] = {
+            "high": vah, "low": val, "rows": len(va),
+            "share_of_volume": round(sum(r["volume"] for r in va) / total, 3),
+            "note": "colour-coded by the chart; not always contiguous",
+        }
+        if last is not None:
+            out["last_close_vs_value_area"] = (
+                "above" if last > vah + step / 2 else "below" if last < val - step / 2 else "inside")
+            out["last_close_distance_from_poc_steps"] = round((last - poc["price"]) / step, 2)
+
+    # high / low volume nodes: local extrema relative to the typical row
+    hvn, lvn = [], []
+    for i in range(1, len(rows) - 1):
+        v = vols[i]
+        if median and v >= vols[i - 1] and v >= vols[i + 1] and v >= cfg.hvn_min_ratio * median and i != poc_i:
+            hvn.append({"price": rows[i]["price"], "volume": float(v), "ratio_to_median": round(float(v / median), 2)})
+        if median and v <= vols[i - 1] and v <= vols[i + 1] and v <= cfg.lvn_max_ratio * median:
+            lvn.append({"price": rows[i]["price"], "volume": float(v), "ratio_to_median": round(float(v / median), 2)})
+    out["high_volume_nodes"] = hvn
+    out["low_volume_nodes"] = lvn
+
+    # thin tails at the edges of the profile (poor highs/lows: little accepted business there)
+    def tail(rows_edge):
+        n = 0
+        for r in rows_edge:
+            if r["volume"] <= cfg.tail_ratio * poc["volume"]:
+                n += 1
+            else:
+                break
+        return n
+    th, tl = tail(reversed(rows)), tail(iter(rows))
+    out["thin_tails"] = {"high_rows": th, "low_rows": tl}
+
+    # one-sided aggression: rows where one side dominated the volume
+    aggressive = []
+    for r in rows:
+        if r["volume"] >= cfg.aggressive_min_volume_ratio * poc["volume"] and r["volume"] > 0:
+            ratio = r["delta"] / r["volume"]
+            if abs(ratio) >= cfg.aggressive_delta_ratio:
+                aggressive.append({"price": r["price"], "side": "buying" if ratio > 0 else "selling",
+                                   "delta": r["delta"], "volume": r["volume"], "delta_ratio": round(ratio, 3)})
+    out["aggressive_levels"] = aggressive
+
+    # shape: where the volume sits within the range (P = top-heavy, b = bottom-heavy, D = balanced)
+    span = rows[-1]["price"] - rows[0]["price"]
+    centroid = float((np.array([r["price"] for r in rows]) * vols).sum() / total) if total else rows[0]["price"]
+    pos = (centroid - rows[0]["price"]) / span if span else 0.5
+    out["shape"] = {
+        "type": "P" if pos >= cfg.shape_skew else "b" if pos <= 1 - cfg.shape_skew else "D",
+        "centroid_price": round(centroid, 4),
+        "centroid_position": round(pos, 3),
+    }
+    # delta above vs below the POC: who has been winning on each side of value
+    above = sum(r["delta"] for r in rows if r["price"] > poc["price"])
+    below = sum(r["delta"] for r in rows if r["price"] < poc["price"])
+    out["delta_around_poc"] = {"above": above, "below": below}
+    return out
+
+
+def profile_points(prof: dict) -> list[tuple[float, float, str]]:
+    """(price, weight, kind) points implied by the profile, to be clustered with the bar levels."""
+    out = [(prof["poc"]["price"], 3.0, "profile_poc")]
+    if "value_area" in prof:
+        out.append((prof["value_area"]["high"], 2.0, "value_area_high"))
+        out.append((prof["value_area"]["low"], 2.0, "value_area_low"))
+    out += [(n["price"], 1.0 + min(1.0, n["ratio_to_median"] / 4), "high_volume_node") for n in prof["high_volume_nodes"]]
+    # low-volume nodes are thin spots (prices move quickly through them), not support/resistance:
+    # they stay in the profile analysis and out of the level clustering
+    out += [(a["price"], 1.0, f"aggressive_{a['side']}") for a in prof["aggressive_levels"]]
+    return out

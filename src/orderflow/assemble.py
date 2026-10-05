@@ -15,7 +15,7 @@ from .overlays import find_current_price_line
 from .pipeline import ShotGeometry, load_shot
 from .profile import read_profile
 from .profile2 import read_profile2
-from .repair import infer_unreadable
+from .repair import correct_misreads, infer_unreadable
 from .split import load_split_shot
 from .calibrate import calibrate_table
 from .table import TableColumn, read_table
@@ -74,7 +74,8 @@ def _cell_json(geo: ShotGeometry, row: int, cell: CellText, is_poc: bool) -> dic
             "sell_imbalance": False, "buy_imbalance": False, "is_poc": is_poc, "confidence": cell.confidence,
         }
     bid_text, ask_text = _split(cell.raw)
-    return {
+    extra = {"corrected_from": cell.corrected_from} if cell.corrected_from else {}
+    return {**extra,
         "price": price,
         "bid": cell.bid,
         "ask": cell.ask,
@@ -212,7 +213,7 @@ def _profile2_json(rows: list, checks: list[ProfileCheck]) -> tuple[list[dict], 
 
 
 def _build(path, geo: ShotGeometry, layout: str, table, reports, labels, profile, profile_kind, profile_summary,
-           candles, line, inferred) -> dict:
+           candles, line, inferred, corrected=0) -> dict:
     times = infer_times(labels)
     poc = geo.find_poc_rows()
     traded = [
@@ -247,6 +248,7 @@ def _build(path, geo: ShotGeometry, layout: str, table, reports, labels, profile
             "flagged_ohlc": [b["index"] for b in bars if b["ohlc"] and not b["ohlc"]["valid"]],
             "flagged_profile_prices": [p["price"] for p in profile if not p["valid"]],
             "inferred_cells": inferred,
+            "corrected_cells": corrected,
             "approximate": "cell volumes are as displayed (3.5K = 3500 +-50); table and profile values likewise",
         },
     }
@@ -289,6 +291,11 @@ def _parse_split(path, models: SplitClassifiers) -> dict:
     table = read_table(geo.img, geo.table, models.table)
     reports = validate_columns(geo, table, models.cells)
     profile_rows = read_profile2(geo, models.profile)
+    # single-glyph misreads that break a row total are corrected when exactly one fix satisfies every check
+    fixes = correct_misreads(geo, models.cells, reports, table, profile_rows)
+    if fixes:
+        geo.overrides.update({(f.col, f.row): f.cell for f in fixes})
+        reports = validate_columns(geo, table, models.cells)
     inferred = infer_unreadable(geo, reports, table, profile_rows)
     if inferred:  # cover-ups (e.g. the price-line label) are solved from the profile row / table
         geo.overrides.update({(i.col, i.row): i.cell for i in inferred})
@@ -297,7 +304,7 @@ def _parse_split(path, models: SplitClassifiers) -> dict:
     labels = read_labels(geo.img, geo.table, models.labels)
     line = find_current_price_line(geo.raw, geo.axis, y_limit=geo.table.y_top)
     return _build(path, geo, "split", table, reports, labels, profile, "delta_volume", summary,
-                  find_candles(geo), line, len(inferred))
+                  find_candles(geo), line, len(inferred), len(fixes))
 
 
 def to_json(path: str | Path, pretty: bool = True, layout: str = "auto") -> str:

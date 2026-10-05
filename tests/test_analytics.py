@@ -302,3 +302,100 @@ def test_stats_include_candle_geometry():
     stats = analyze(doc(b))["bars"][0]["stats"]
     assert (stats["open"], stats["close"], stats["direction"]) == (102, 108, "up")
     assert stats["close_location"] == pytest.approx(0.8) and stats["body_share"] == pytest.approx(0.6)
+
+
+# --- volume profile --------------------------------------------------------------------------
+
+def profile_doc(vols, deltas, va=None, last_close=None, step=1.0, base=100.0):
+    rows = []
+    for i, (v, d) in enumerate(zip(vols, deltas)):
+        in_va = (va is None) or (va[0] <= i <= va[1])
+        rows.append({"price": base + i * step, "volume": float(v), "delta": float(d), "in_value_area": in_va,
+                     "zone": "value_area" if in_va else "outside", "valid": True})
+    rows.sort(key=lambda r: -r["price"])
+    return {"source": "synthetic", "layout": "split", "profile_kind": "delta_volume", "profile": rows, "bars": [],
+            "price": {"step_per_row": step, "last_close": last_close, "visible": {"high": 999.0, "low": 0.0}}}
+
+
+VOLS = [5, 12, 30, 60, 100, 70, 40, 15, 45, 25, 6]
+DELTAS = [4, 0, 0, 30, 5, -35, 0, 0, 0, 0, 0]
+
+
+def test_profile_poc_value_area_nodes_and_tails():
+    from orderflow.analytics import profile_analysis
+
+    p = profile_analysis(profile_doc([v * 1000 for v in VOLS], [d * 1000 for d in DELTAS], va=(2, 8), last_close=104.0))
+    assert p["poc"]["price"] == 104.0 and p["poc"]["volume"] == 100000
+    assert p["value_area"]["low"] == 102.0 and p["value_area"]["high"] == 108.0
+    assert [n["price"] for n in p["high_volume_nodes"]] == [108.0]  # 45K: local peak above 1.25x the median row
+    assert [n["price"] for n in p["low_volume_nodes"]] == [107.0]  # 15K: a trough between two bigger rows
+    assert p["thin_tails"] == {"high_rows": 1, "low_rows": 1}  # 6K and 5K are <= 10% of the POC row
+    assert p["last_close_vs_value_area"] == "inside" and p["last_close_distance_from_poc_steps"] == 0.0
+
+
+def test_profile_aggressive_rows_need_volume_and_one_sidedness():
+    from orderflow.analytics import profile_analysis
+
+    p = profile_analysis(profile_doc([v * 1000 for v in VOLS], [d * 1000 for d in DELTAS]))
+    got = {(a["price"], a["side"]) for a in p["aggressive_levels"]}
+    # 103: 30K of 60K delta is buying; 105: -35K of 70K is selling. The 100 row (4K of 5K) is too thin to count.
+    assert got == {(103.0, "buying"), (105.0, "selling")}
+
+
+def test_profile_shape_and_last_close_position():
+    from orderflow.analytics import profile_analysis
+
+    top_heavy = profile_doc([1, 2, 3, 5, 8, 20, 60, 100, 70, 30, 10], [0] * 11)
+    bottom_heavy = profile_doc([10, 30, 70, 100, 60, 20, 8, 5, 3, 2, 1], [0] * 11)
+    balanced = profile_doc([5, 10, 20, 40, 80, 100, 80, 40, 20, 10, 5], [0] * 11)
+    assert profile_analysis(top_heavy)["shape"]["type"] == "P"
+    assert profile_analysis(bottom_heavy)["shape"]["type"] == "b"
+    assert profile_analysis(balanced)["shape"]["type"] == "D"
+    above = profile_analysis(profile_doc(VOLS, DELTAS, va=(2, 8), last_close=112.0))
+    below = profile_analysis(profile_doc(VOLS, DELTAS, va=(2, 8), last_close=99.0))
+    assert above["last_close_vs_value_area"] == "above" and below["last_close_vs_value_area"] == "below"
+
+
+def test_profile_ignores_unvalidated_rows_and_single_column_charts():
+    from orderflow.analytics import profile_analysis
+
+    d = profile_doc([v * 1000 for v in VOLS], [d * 1000 for d in DELTAS])
+    for r in d["profile"]:
+        r["valid"] = False
+    assert profile_analysis(d) is None
+    d["profile_kind"] = "delta"
+    assert profile_analysis(d) is None
+
+
+def test_profile_points_join_the_level_clustering_and_confluence_merges():
+    base = profile_doc([v * 1000 for v in VOLS], [d * 1000 for d in DELTAS], va=(2, 8), last_close=106.0)
+    base["bars"] = [bar(0, [cell(100 + k, 600 + 10 * k, 700) for k in range(8)], poc=104)]
+    res = analyze(base)
+    kinds = {tuple(lv["kinds"]) for lv in res["levels"]}
+    assert any("profile_poc" in k and "poc" in k for k in kinds)  # bar POC and profile POC at 104 form one level
+    assert not any("low_volume_node" in k for k in kinds)
+    lv = next(lv for lv in res["levels"] if "profile_poc" in lv["kinds"])
+    assert lv["price"] == 104.0 and lv["role"] == "support" and lv["distance_steps"] == -2.0
+
+
+def test_real_profiles(real_split):
+    for stem, (doc_, a) in real_split.items():
+        pr = a["profile"]
+        assert json.loads(json.dumps(pr)) == pr
+        assert pr["poc"]["price"] == doc_["profile_summary"]["poc"]
+        assert 0.4 <= pr["value_area"]["share_of_volume"] <= 0.95
+        assert pr["poc"]["price"] not in [n["price"] for n in pr["high_volume_nodes"]]
+        assert pr["shape"]["type"] in "PbD"
+        assert any("profile_poc" in lv["kinds"] for lv in a["levels"])
+        assert abs(pr["total_delta"] - doc_["profile_summary"]["total_delta"]) < 1e-6
+
+
+@pytest.fixture(scope="module")
+def real_split():
+    from orderflow.assemble import parse_screenshot
+
+    out = {}
+    for k in range(1, 9):
+        d = parse_screenshot(DATA / f"split{k}.png")
+        out[f"split{k}"] = (d, analyze(d))
+    return out

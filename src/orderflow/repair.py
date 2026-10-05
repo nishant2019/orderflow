@@ -74,3 +74,93 @@ def infer_unreadable(geo, reports: list, table: list[TableColumn], profile: list
             confidence=0.5, bid_tol=tol, ask_tol=tol, inferred=True,
         )))
     return out
+
+
+# --- correcting misreads with the chart's own checks --------------------------------------------
+
+@dataclass(frozen=True)
+class Correction:
+    col: int
+    row: int
+    was: str
+    now: str
+    cell: CellText
+
+
+def _with_cell(reports: list, col: int, row: int, cell: CellText) -> list:
+    from .validate import ColumnReport
+
+    out = []
+    for rep in reports:
+        if rep.col != col:
+            out.append(rep)
+        else:
+            out.append(ColumnReport(rep.col, [(r, cell if r == row else c) for r, c in rep.cells]))
+    return out
+
+
+def _alternative_texts(geo, col: int, row: int, side: str, clf) -> list[str]:
+    """Readings of one box that differ from the best guess by a single glyph."""
+    from .cells import glyph_features
+
+    glyphs = geo.half_glyphs(col, row, side)
+    feats = [glyph_features(g, geo.glyph_h) for g in glyphs]
+    best = [clf.classify(f)[0] for f in feats]
+    out = []
+    for i, f in enumerate(feats):
+        if best[i] in ".K" or best[i] == "-":
+            continue
+        for alt in clf.alternatives(f):
+            if alt.isdigit():
+                out.append("".join(best[:i]) + alt + "".join(best[i + 1 :]))
+    return out
+
+
+def correct_misreads(geo, clf, reports: list, table: list[TableColumn], profile: list) -> list[Correction]:
+    """Fix single-glyph misreads that break a profile row's totals.
+
+    For every profile row whose volume or delta check fails, each cell on that row is tried with
+    each alternative single-glyph reading. A change is accepted only if it is the *only* one that
+    makes the row total, the cell's column total and the imbalance rule all pass at once.
+    """
+    from .cells import display_tolerance, parse_number
+    from .validate import ColumnReport, SLACK, _check_imbalance, _check_sums, _row_sums, table_tolerance, validate_profile2
+
+    fixes: list[Correction] = []
+    for pc in validate_profile2(profile, reports):
+        if pc.ok or not any(c.name in ("volume", "delta") and c.status == "fail" for c in pc.checks):
+            continue
+        prow = next(p for p in profile if p.row == pc.row)
+        found: list[Correction] = []
+        for rep in reports:
+            for row, cell in rep.cells:
+                if row != pc.row or cell.bid is None or cell.ask is None or cell.inferred:
+                    continue
+                for side in ("bid", "ask"):
+                    for alt_text in _alternative_texts(geo, rep.col, row, side, clf):
+                        value = parse_number(alt_text)
+                        if value is None:
+                            continue
+                        bid = value if side == "bid" else cell.bid
+                        ask = value if side == "ask" else cell.ask
+                        bid_t, ask_t = cell.raw.split("X")
+                        new_raw = f"{alt_text}X{ask_t}" if side == "bid" else f"{bid_t}X{alt_text}"
+                        new = CellText(new_raw, bid, ask, cell.sell_imbalance, cell.buy_imbalance, False, 0.6,
+                                       display_tolerance(new_raw.split("X")[0]), display_tolerance(new_raw.split("X")[1]), False, cell.raw)
+                        trial = _with_cell(reports, rep.col, row, new)
+                        delta, volume, tol, _ = _row_sums(trial)
+                        tol_v = tol.get(row, 0.0) + table_tolerance(prow.volume_raw) + SLACK
+                        tol_d = tol.get(row, 0.0) + table_tolerance(prow.delta_raw.lstrip("-")) + SLACK
+                        if abs(volume[row] - prow.volume) > tol_v or abs(delta[row] - prow.delta) > tol_d:
+                            continue
+                        tmp = ColumnReport(rep.col, next(t for t in trial if t.col == rep.col).cells)
+                        _check_sums(tmp, table[rep.col])
+                        ratio = getattr(geo, "imbalance_ratio", None)
+                        if ratio:
+                            _check_imbalance(tmp, ratio)
+                        if any(c.status == "fail" for c in tmp.checks):
+                            continue
+                        found.append(Correction(rep.col, row, cell.raw, new_raw, new))
+        if len(found) == 1:
+            fixes.append(found[0])
+    return fixes

@@ -1,94 +1,119 @@
 # orderflow
 
 Reads a **GoCharting footprint (order-flow) screenshot** and returns structured data — no LLM, no
-external service. Classical computer vision plus small nearest-neighbour glyph classifiers, all
-trained on the sample screenshots in `tests/data`.
+external service. Classical computer vision plus small nearest-neighbour glyph classifiers, trained on
+the sample screenshots in `tests/data`, and a set of cross-checks that tell you which numbers to trust.
 
 ```
-python -m orderflow screenshot.png > out.json                # parsed data (pretty; --compact for one line)
-python -m orderflow screenshot.png --analyze > out.json      # {"parsed": ..., "analysis": ...}
+python -m orderflow screenshot.png > out.json                 # parsed data (layout auto-detected)
+python -m orderflow screenshot.png --analyze > out.json       # {"parsed": ..., "analysis": ...}
+python -m orderflow screenshot.png --layout split|single      # force a layout; --compact for one line
 ```
 ```python
 from orderflow.assemble import parse_screenshot
-doc = parse_screenshot("screenshot.png")
-
 from orderflow.analytics import analyze, Thresholds
+doc = parse_screenshot("screenshot.png")
 result = analyze(doc, Thresholds(absorption_min_share=0.3))   # thresholds are tunable
 ```
+
+## Two chart layouts
+
+| | **split** (the main source) | single (older samples) |
+|---|---|---|
+| Cells | two boxes per bar and price row: **bid left, ask right**, one number each | one column, text `bid X ask` |
+| Imbalance | orange box on that side; red text = sell (bid), blue text = buy (ask) | orange bar, red/blue text |
+| POC | **black rectangle** around the pair | orange-red ring |
+| Profile | centre axis: **delta on the left, total volume on the right**, value-area colours | delta bars at the right edge |
+
+The layout is detected from the POC rectangle's colour (`orderflow.layout`). Chart settings the split
+screenshots were taken with are in `docs/CHART_SETTINGS.md` (imbalance = Ratio, 300 %).
 
 ## What is extracted
 
 | Part | Output |
 |---|---|
-| Summary table | per bar: volume, delta, cumulative delta |
-| Candles | per bar: open, high, low, close, direction (from the thin candle at each column's left edge), wick-clipping flags |
-| Footprint cells | per bar and price: bid, ask, delta, sell/buy imbalance (red bid / blue ask on orange), POC flag, `...` hidden cells |
-| Time axis | per bar time (`HH:MM`), session starts, inferred times for date-labelled bars |
-| Price axis | pixel → price fit, rows, price step per row (e.g. 1, 0.55, 5) |
-| Right-hand profile | per-price aggregate delta |
-| Overlays | current-price line |
+| Summary table | per bar: volume, delta, cumulative delta (`1.12M`, `-4.81K`, `831`) |
+| Footprint cells | per bar and price: bid, ask, delta, sell/buy imbalance, POC flag |
+| Candles | per bar: open, high, low, close, direction; clipped / hidden-wick flags |
+| Time axis | per bar time, session starts (inferred time for the date-labelled bar) |
+| Price axis | pixel→price fit, row pitch, **price step per row** (0.9, 0.55, 0.7, 1, 2, 5, 15 …) |
+| Profile (split) | per price: delta, volume, value-area membership, peak row; POC, value-area high/low |
+| `price.poc_line` | the pink horizontal line (see below) |
 
-All values are **as displayed** (`3.5K` means 3500 ± 50). Each bar and profile row carries its own
-`checks` and a `valid` flag.
+All values are **as displayed** (`3.5K` means 3500 ± 50). Each bar and profile row carries its own `checks`
+and a `valid` flag; `summary` lists flagged and skipped bars.
+
+### The pink line is the profile POC, not the current price
+In all 8 split charts that have both, the pink line sits on the profile's highest-volume row (within
+0.03 of a row) and is often far from the last close (up to ~9 rows). It is reported as `price.poc_line`;
+the last candle's close is `price.last_close`. (Please confirm this reading of the platform.)
+
+## Validation: why you can trust a number
+
+Every number on the chart is cross-checked against others the chart prints independently. Tolerances come
+from the displayed precision (`3.5K` = ±50).
+
+* cells of a bar sum to the **table** volume and delta; the table's cumulative delta chains bar to bar
+  (or resets at a session start);
+* cells of a price row sum to the **profile** row's volume and delta; bar lengths are proportional;
+* the POC box is the largest cell of its bar;
+* drawn imbalance flags follow the chart's own rule: **sell** when `bid[r] ≥ 3 × ask[row above]`, **buy** when
+  `ask[r] ≥ 3 × bid[row below]` (every one of 169 drawn flags in the samples satisfies it);
+* each candle chains from the previous close (not across a session) and covers the rows that traded.
+
+When a check fails the data is flagged, never silently accepted. Two repairs use the same checks:
+
+* **covered cell** (e.g. the pink price label printed over the first column): its bid and ask are solved from the
+  profile row / table totals and marked `inferred` with their uncertainty;
+* **single-glyph misread** (`48K` read as `43K`): corrected only if exactly one alternative reading satisfies the row
+  total, the column total and the imbalance rule together; marked with `corrected_from`.
 
 ## Analytics (`orderflow.analytics`)
 
-Rule-based, runs on the parsed JSON (not pixels), and only on bars that passed validation; the rest
-are listed under `excluded` with a reason. Every signal carries its numeric evidence, a strength
-(0-1) and a confidence (reduced when the chart hid some cells).
+Rule-based, on the parsed JSON, only on validated bars. Every signal has numeric evidence, a strength and a
+confidence. Per bar: `stacked_imbalance`, `absorption` (with next-bar confirmation), `exhaustion`,
+`unfinished/finished_extreme`, `rejection` (wick), `delta_divergence`, `poc`. Cross-bar: support/resistance
+`levels` clustered from bar POCs, imbalances, absorption **and the volume profile**.
 
-| Signal | Rule (defaults in `Thresholds`) |
-|---|---|
-| `stacked_imbalance` | >= 3 consecutive price rows with the same buy (blue ask) or sell (red bid) imbalance flag |
-| `absorption` | at a bar's high: the top 2 rows hold >= 25% of the bar's volume (and clearly more than an even spread would) with delta >= +15% of that volume (aggressive buying that stalled) -> bearish; mirror at the low -> bullish. `confirmation`: `held` if the next bar did not extend past the extreme, `broken` if it did |
-| `exhaustion` | volume thinning over the last 3 rows into the extreme, extreme row <= 20% of the POC row |
-| `unfinished_extreme` / `finished_extreme` | both bid and ask traded at the extreme row (likely revisited) / one side is zero |
-| `rejection` | wick (not clipped by the view) is >= 50% of the candle range at the high (bearish) or low (bullish) |
-| `delta_divergence` | candle closed up on negative delta (bearish) or down on positive delta (bullish); needs a real body and |delta| >= 5% of volume |
-| `poc` | POC location in the bar's range (upper / middle / lower third) |
-| `levels` | POCs, stacked-imbalance zones, absorption and unfinished extremes merged within 1.5 rows; `strength`, `retests` by later bars, `support`/`resistance` vs the current price when one is drawn |
+Volume profile (`analysis.profile`): POC (share of volume, delta at POC), value area (colour-coded by the chart),
+last close vs value area, high/low volume nodes, thin tails, rows of one-sided aggression, shape (P / b / D),
+delta above vs below the POC. Defaults are in `Thresholds`; they are untested against real price outcomes.
 
-These are heuristics, not trading advice. A bar's candle is used only when it passed validation;
-otherwise "extremes" fall back to the highest and lowest rows that traded. Bars touching the edge of the
-visible price range, or with wicks running off the plot, are noted (the true high/low may be off-screen).
+## How well does it work?
 
-## Validation (why you can trust a bar)
-
-Every bar is cross-checked against numbers the chart prints independently:
-cell Σ(bid+ask) ≈ table volume; cell Σ(ask−bid) ≈ table delta; the POC cell has the largest total;
-cum[c] = cum[c−1] + delta[c] (or a session reset); each profile row = Σ(ask−bid) of that row's cells,
-its sign matches the bar colour and its bar length is proportional to |value|. Each candle must chain from the
-previous close (except across a new session) and cover the rows that traded. Tolerances come from the
-displayed precision. A failed check means *this bar should not be trusted*, not which number is wrong.
-
-`summary` lists `flagged_bars` (a check failed) and `skipped_bars` (could not be checked: clipped by
-the image edge, or no cells in the visible price range).
+Leave-one-image-out on the 9 split screenshots (retrained without the held-out image and its hand
+transcriptions; `scripts/eval_split_holdout.py`): **106 / 109 bar columns and 113 / 120 profile rows pass every
+check, 1 of 502 cells unparseable** (then solved from totals). Six of the seven failing profile rows are the `M`
+suffix in the one image that has it. With all images in training every bar, row and candle validates.
 
 ## Known limits
 
-* Only GoCharting, this layout. Dimensions may vary per image (calibrated each time); a new font size or
-  theme needs new training examples.
-* The live bar can sit under the translucent profile overlay; its cells are then unreadable and flagged.
-* Text clipped by an overlay (`78K X 4…`) is read as written and caught by the cell-sum checks.
-* Cells outside the visible price range are not in the screenshot.
+* GoCharting only, these two layouts. A new font size, theme or settings combination needs new examples;
+  a number format never seen in training (e.g. `M` before it was added) will be misread — the checks flag it.
+* Overlays not handled: the amber **"VPOC <day>" line** (seen once, as an image I could not open as a file).
+* The colour-coded value area is not always contiguous (the platform seems to colour at a finer resolution).
+* Gap rows (no trades) are not drawn; the platform's imbalance rule next to a gap is not visible, so those pairs
+  are not checked.
+* Candle prices are measured in pixels (±1 px); a wick hidden under the POC rectangle is estimated to its far edge.
 * Not yet extracted: the cumulative-delta candle pane.
-* Candle prices are measured in pixels and mapped through the price axis (about +-1 px, i.e. a few hundredths of a row). They are validated against the cells and the neighbouring bars, not against a platform export.
-* Analytics thresholds are untested against real outcomes; they are starting points to tune.
 
 ## Training data
 
-Glyph classifiers live in `src/orderflow/data/*.npz` and are rebuilt from hand-transcribed ground truth:
+Glyph classifiers live in `src/orderflow/data/*.npz`.
 
-| Truth file (`tests/data`) | Builder (`scripts/`) | Classifier |
+| Truth (`tests/data`) | Builder (`scripts/`) | Classifier |
 |---|---|---|
 | `axis_labels.json` | `build_axis_templates.py` | price-axis labels |
-| `cell_truth.json` | `build_cell_glyphs.py` | footprint cell text |
-| `table_truth.json` | `build_table_glyphs.py` | summary table |
-| `profile_truth.json` | `build_profile_glyphs.py` | profile values |
-| `time_truth.json` (+ `axis_labels.json`) | `build_label_glyphs.py` | time labels |
+| `cell_truth.json` | `build_cell_glyphs.py` | single-layout cell text |
+| `table_truth.json`, `profile_truth.json` | `build_table_glyphs.py`, `build_profile_glyphs.py` | table, single-layout profile |
+| `time_truth.json` (+ axis labels) | `build_label_glyphs.py` | time labels |
+| `split1..9.png` (+ `profile2_truth.json`, split rows of `table_truth.json` for `M`) | **`train_split.py`** | split cells / table / profile |
 
-Add a screenshot as `tests/data/shotN.png`, transcribe it into the truth files, re-run the builders.
-`cell_holdout.json` (shot 1) is deliberately **not** used for training: it is the out-of-sample check.
+The split classifiers are **self-trained**: a glyph becomes a label only if its cell, column and profile row
+agree with the chart's checksums (`orderflow.selftrain`), so thousands of glyphs are labelled without hand
+transcription. `cell_holdout.json` (shot 1, single layout) is kept out of training. The hand-read split cells in
+`tests/test_split.py` are regression checks of the reading, **not** held out (those images are in the self-training
+set): the independent measure for the split layout is the leave-one-image-out run above.
 
 ```
 pip install -e '.[dev]' && pytest
