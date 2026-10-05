@@ -24,16 +24,18 @@ def test_json_serialisable(parsed):
 
 
 @pytest.mark.parametrize(
-    "shot,step,current",
+    "shot,step,poc_line",
     [(1, 1.0, 405.0), (2, 1.0, None), (3, 0.55, 266.48), (4, 5.0, 2885.0), (5, 1.0, None)],
 )
-def test_price_block(parsed, shot, step, current):
+def test_price_block(parsed, shot, step, poc_line):
     price = parsed[shot]["price"]
     assert price["step_per_row"] == step
-    if current is None:
-        assert price["current"] is None
+    assert "current" not in price  # the pink line is not the current price (see price.poc_line)
+    if poc_line is None:
+        assert price["poc_line"] is None
     else:
-        assert price["current"] == pytest.approx(current, abs=0.1 * step + 0.02)
+        assert price["poc_line"] == pytest.approx(poc_line, abs=0.1 * step + 0.02)
+    assert price["last_close"] is not None
 
 
 @pytest.mark.parametrize(

@@ -19,6 +19,22 @@ MIN_BAR_H, MAX_BAR_H = 11, 40  # excludes text glyphs (smaller) and candle wicks
 MIN_FILL = 0.45  # bbox fill ratio; border boxes are hollow rings and fall below this
 
 
+def snap_step(raw: float, rel_tol: float = 0.006) -> float:
+    """The simplest decimal within `rel_tol` of the measured step (15.02 -> 15, 0.699 -> 0.7).
+
+    Steps are exchange tick multiples, so they have few significant digits; the pixel-based
+    measurement is only good to about half a percent.
+    """
+    import math
+
+    for digits in (1, 2, 3, 4):
+        scale = 10 ** (digits - 1 - math.floor(math.log10(raw)))
+        cand = round(raw * scale) / scale
+        if abs(cand - raw) <= rel_tol * raw:
+            return cand
+    return round(raw, 4)
+
+
 @dataclass(frozen=True)
 class RowGrid:
     pitch: float  # row height in px
@@ -81,5 +97,5 @@ def fit_row_grid(img: np.ndarray, axis: PriceAxis, geo: TableGeometry) -> RowGri
         pitch=float(pitch),
         origin=float(origin),
         bar_height=float(np.median(boxes[:, 1])),
-        price_step=round(float(pitch * abs(axis.slope)), 2),
+        price_step=snap_step(float(pitch * abs(axis.slope))),
     )

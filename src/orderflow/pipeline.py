@@ -8,7 +8,10 @@ import numpy as np
 
 from .axis import PriceAxis, calibrate_price_axis
 from .calibrate import TableGeometry, calibrate_table
-from .cells import CellRect, cell_rect, estimate_glyph_height, glyph_features, ink_masks, segment_glyphs, soft_ink_map, Glyph
+from .cells import (
+    CellRect, CellText, Glyph, GlyphClassifier, cell_rect, estimate_glyph_height, glyph_features, ink_masks,
+    parse_cell, segment_glyphs, soft_ink_map,
+)
 from .rows import RowGrid, fit_row_grid
 
 
@@ -26,6 +29,18 @@ class ShotGeometry:
         rect = cell_rect(self.table, self.grid, col, row)
         masks = ink_masks(self.img, rect)
         return segment_glyphs(masks, self.grid.pitch, self.glyph_h, soft_ink_map(self.img, rect, masks))
+
+    layout = "single"  # "bid X ask" text in one column per bar
+
+    def find_poc_rows(self) -> dict[int, int]:
+        """Map bar column -> row index of its POC cell."""
+        from .poc import find_poc_rows
+
+        return find_poc_rows(self)
+
+    def read_cells(self, col: int, clf: GlyphClassifier) -> list[tuple[int, CellText]]:
+        """(row, parsed cell) for every cell of the column that holds text, top to bottom."""
+        return [(row, parse_cell(glyphs, self.glyph_h, clf)) for row, glyphs in self.text_cells(col)]
 
     def text_cells(self, col: int) -> list[tuple[int, list[Glyph]]]:
         """(row, glyphs) of every cell in the column that holds text, top to bottom."""

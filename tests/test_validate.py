@@ -22,9 +22,13 @@ def cell_clf():
     return GlyphClassifier(_CELLS["features"], _CELLS["labels"])
 
 
+def image_path(key):
+    return DATA / (f"shot{key}.png" if key.isdigit() else f"{key}.png")
+
+
 @pytest.mark.parametrize("shot", sorted(TABLE_TRUTH))
 def test_table_reads_exactly(shot):
-    img = cv2.imread(str(DATA / f"shot{shot}.png"))
+    img = cv2.imread(str(image_path(shot)))
     cols = read_table(img, calibrate_table(img), load_table_classifier())
     for name in ROW_NAMES:
         for col, text in enumerate(TABLE_TRUTH[shot][name]):
@@ -84,23 +88,24 @@ def test_validator_detects_a_misread_cell():
     clf = cell_clf()
     # re-run with a classifier that mislabels every 'K' as 'M' is too blunt; instead corrupt
     # one parsed cell by patching parse_cell for one call
+    from orderflow.pipeline import ShotGeometry
     import orderflow.validate as v
 
-    original = v.parse_cell
+    original = ShotGeometry.read_cells
     calls = {"n": 0}
 
-    def corrupted(glyphs, glyph_h, clf):
-        cell = original(glyphs, glyph_h, clf)
-        calls["n"] += 1
-        if calls["n"] == 3 and cell.bid is not None:  # col 0, third cell
-            return CellText(cell.raw, cell.bid + 8000.0, cell.ask, False, False, False, 1.0, cell.bid_tol, cell.ask_tol)
-        return cell
+    def corrupted(self, col, clf):
+        cells = original(self, col, clf)
+        if col == 0 and cells:  # corrupt the third cell of column 0
+            row, cell = cells[2]
+            cells[2] = (row, CellText(cell.raw, cell.bid + 8000.0, cell.ask, False, False, False, 1.0, cell.bid_tol, cell.ask_tol))
+        return cells
 
-    v.parse_cell = corrupted
+    ShotGeometry.read_cells = corrupted
     try:
         reports = v.validate_columns(geo, table, clf)
     finally:
-        v.parse_cell = original
+        ShotGeometry.read_cells = original
     assert not reports[0].ok
 
 

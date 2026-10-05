@@ -45,3 +45,24 @@ def find_current_price_line(img: np.ndarray, axis: PriceAxis, y_limit: float | N
             break
     y = float(np.mean(group)) + 0.5  # pixel row index -> centre of the pixel
     return PriceLine(y=y, price=axis.y_to_price(y))
+
+
+def remove_price_line(img: np.ndarray, axis: PriceAxis, table) -> np.ndarray:
+    """A copy of the screenshot with the pink current-price line patched out.
+
+    The 2 px line runs through text and would read as ink; each of its rows is replaced by the
+    nearest row above/below that is not part of the line (strokes it crosses lose 1-2 px).
+    """
+    h, w = img.shape[:2]
+    pink = _is_pink(img)[:, LEFT_FRAME : w - RIGHT_STRIP].sum(axis=1) > MIN_LINE_FRACTION * (w - RIGHT_STRIP - LEFT_FRAME)
+    rows = np.where(pink)[0]
+    rows = rows[rows < table.y_top]
+    out = img.copy()
+    if len(rows) == 0:
+        return out
+    lo, hi = int(rows.min()), int(rows.max())
+    above, below = max(lo - 1, 0), min(hi + 1, h - 1)
+    for y in range(lo, hi + 1):
+        src = above if (y - lo) <= (hi - y) else below
+        out[y, LEFT_FRAME : w - RIGHT_STRIP] = img[src, LEFT_FRAME : w - RIGHT_STRIP]
+    return out

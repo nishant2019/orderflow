@@ -19,6 +19,7 @@ X_BEFORE, X_AFTER = 8, 16  # search window around the column's left edge
 MIN_BODY_W = 3  # rows at least this wide are body; narrower rows are wick
 MIN_EXTENT = 4  # px: smaller marks are not candles
 CLIP_MARGIN = 2  # px from the search window's top/bottom that counts as clipped
+MAX_GAP = 2  # px between a wick's visible end and the black POC edge that may be covering it
 
 
 def bucket(price: float, step: float, jitter: float = 0.0) -> float:
@@ -43,6 +44,8 @@ class Candle:
     high_clipped: bool  # wick runs off the visible plot: the true high is higher
     low_clipped: bool
     body_px: int  # body height in pixels (0: a doji drawn as a line)
+    high_hidden: bool = False  # the wick end was under the POC rectangle: high is estimated to its far edge
+    low_hidden: bool = False
 
 
 def _plot_window(geo: ShotGeometry) -> tuple[int, int]:
@@ -53,9 +56,35 @@ def _plot_window(geo: ShotGeometry) -> tuple[int, int]:
     return top, int(max(ys) + spacing * 0.6)
 
 
+def _hidden_extension(black: np.ndarray, end: int, col: int, step: int) -> int:
+    """How far the wick continues under a black POC edge beyond its visible `end`.
+
+    Starting at most MAX_GAP px past the visible end, a run of at least 2 black pixels in the
+    wick's own column means the wick is covered there; the covered length (gap + run) is returned.
+    """
+    n = black.shape[0]
+    gap = 0
+    while gap <= MAX_GAP:
+        y = end + step * (gap + 1)
+        if not (0 <= y < n):
+            return 0
+        if black[y, col]:
+            break
+        gap += 1
+    else:
+        return 0
+    run = 0
+    y = end + step * (gap + 1)
+    while 0 <= y < n and black[y, col]:
+        run += 1
+        y += step
+    return gap + run if run >= 2 else 0
+
+
 def find_candle(geo: ShotGeometry, col: int) -> Candle | None:
     x0, _ = geo.table.col_x(col)
-    xa, xb = max(x0 - X_BEFORE, 0), x0 + X_AFTER
+    before, after = getattr(geo, "candle_window", (X_BEFORE, X_AFTER))
+    xa, xb = max(x0 - before, 0), x0 + after
     y0, y1 = _plot_window(geo)
     win = geo.img[y0:y1, xa:xb].astype(np.int32)
     up = np.abs(win - UP_BGR).sum(axis=2) < COLOR_TOL
@@ -94,6 +123,19 @@ def find_candle(geo: ShotGeometry, col: int) -> Candle | None:
         return None
     widths = keep.sum(axis=1)
     top_px, bottom_px = int(rows.min()), int(rows.max())
+    # the black POC rectangle can cover the end of a wick: if a black run continues the wick's
+    # own column beyond its visible end, the wick ends somewhere inside it; take the run's far end
+    wick_col = int(np.argmax(keep.sum(axis=0) * (keep.sum(axis=0) < 0.9 * len(rows)) + keep.sum(axis=0) * 0.001))
+    black = win.max(axis=2) < 40
+    high_hidden = low_hidden = False
+    ext = _hidden_extension(black, top_px, wick_col, -1)
+    if ext:
+        top_px -= ext
+        high_hidden = True
+    ext = _hidden_extension(black, bottom_px, wick_col, +1)
+    if ext:
+        bottom_px += ext
+        low_hidden = True
     body_rows = np.where(widths >= MIN_BODY_W)[0]
     if len(body_rows):
         body_top, body_bottom = int(body_rows.min()), int(body_rows.max())
@@ -113,7 +155,7 @@ def find_candle(geo: ShotGeometry, col: int) -> Candle | None:
     return Candle(
         direction=direction, open=open_, high=high, low=low, close=close,
         high_clipped=top_px <= CLIP_MARGIN, low_clipped=bottom_px >= (y1 - y0) - 1 - CLIP_MARGIN,
-        body_px=body_px,
+        body_px=body_px, high_hidden=high_hidden, low_hidden=low_hidden,
     )
 
 

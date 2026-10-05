@@ -41,7 +41,7 @@ def bar(index, cells, poc=None, valid=True, clipped=False, failed=(), candle=Non
 def doc(*bars, current=None):
     return {
         "source": "synthetic",
-        "price": {"step_per_row": 1.0, "current": current, "visible": {"high": 200.0, "low": 50.0}},
+        "price": {"step_per_row": 1.0, "last_close": current, "visible": {"high": 200.0, "low": 50.0}},
         "bars": list(bars),
     }
 

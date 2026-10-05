@@ -12,11 +12,11 @@ import numpy as np
 
 from .cells import CellText, display_tolerance, parse_cell, GlyphClassifier
 from .pipeline import ShotGeometry
-from .poc import find_poc_rows
 from .table import TableColumn
 
 SLACK = 1.0  # absolute volume units added to every tolerance
 LENGTH_REL_TOL = 0.10  # bar length vs fitted scale: catches gross misreads, not rounding
+MIN_BAR_PX = 25  # shorter bars are drawn at a minimum visible width, so their length says little
 
 
 @dataclass(frozen=True)
@@ -44,10 +44,10 @@ def table_tolerance(raw: str) -> float:
 def validate_columns(
     geo: ShotGeometry, table: list[TableColumn], clf: GlyphClassifier
 ) -> list[ColumnReport]:
-    poc = find_poc_rows(geo)
+    poc = geo.find_poc_rows()
     reports = []
     for col, tcol in enumerate(table):
-        cells = [(row, parse_cell(glyphs, geo.glyph_h, clf)) for row, glyphs in geo.text_cells(col)]
+        cells = geo.read_cells(col, clf)
         rep = ColumnReport(col, cells)
         reports.append(rep)
         if tcol.clipped:
@@ -58,13 +58,16 @@ def validate_columns(
             continue
         _check_sums(rep, tcol)
         _check_poc(rep, poc.get(col))
+        ratio = getattr(geo, "imbalance_ratio", None)
+        if ratio:
+            _check_imbalance(rep, ratio)
     _check_cum_chain(reports, table)
     return reports
 
 
 def _check_sums(rep: ColumnReport, tcol: TableColumn) -> None:
     parsed = [(r, c) for r, c in rep.cells if not c.ellipsis]
-    unreadable = [r for r, c in parsed if c.bid is None]
+    unreadable = [r for r, c in parsed if c.bid is None or c.ask is None]
     n_ellipsis = len(rep.cells) - len(parsed)
     if unreadable:
         rep.checks.append(Check("cells", "fail", f"{len(unreadable)} cell(s) did not parse"))
@@ -93,6 +96,35 @@ def _check_sums(rep: ColumnReport, tcol: TableColumn) -> None:
         rep.checks.append(Check(name, status, f"cells {cell_sum:.0f} vs table {got.value:.0f} (tol {allowed:.0f})"))
     if tcol.volume.value is not None and tcol.delta.value is not None and abs(tcol.delta.value) > tcol.volume.value + SLACK:
         rep.checks.append(Check("table", "fail", "|delta| exceeds volume"))
+
+
+def _check_imbalance(rep: ColumnReport, ratio: float) -> None:
+    """The drawn imbalance flags must follow the chart's own rule (settings: Ratio, 300 %).
+
+    Diagonal comparison, verified on every drawn flag of the sample charts: a sell imbalance
+    (orange bid) means bid[r] >= ratio * ask[row above]; a buy imbalance (orange ask) means
+    ask[r] >= ratio * bid[row below]. A neighbouring row without a cell counts as zero volume inside the
+    bar's range (no trades) and as "nothing to compare" beyond its top or bottom row.
+    Both directions are checked, within the rounding of the displayed numbers.
+    """
+    cells = {row: c for row, c in rep.cells if c.bid is not None and c.ask is not None}
+    problems = []
+    for row, c in cells.items():
+        for side, own, own_tol, nb_row, flag in (
+            ("sell", c.bid, c.bid_tol, row - 1, c.sell_imbalance),
+            ("buy", c.ask, c.ask_tol, row + 1, c.buy_imbalance),
+        ):
+            nb = cells.get(nb_row)
+            if nb is None:
+                continue  # neighbour not drawn (a gap, or beyond the bar): the platform's rule there is not visible
+            opp, opp_tol = (nb.ask, nb.ask_tol) if side == "sell" else (nb.bid, nb.bid_tol)
+            surely = own - own_tol >= ratio * (opp + opp_tol) and own > 0  # imbalanced whatever the rounding
+            possibly = own + own_tol >= ratio * max(opp - opp_tol, 0.0) and own > 0
+            if flag and not possibly:
+                problems.append(f"row {row} {side}: drawn, but {own:g} is not {ratio:g}x {opp:g}")
+            elif not flag and surely:
+                problems.append(f"row {row} {side}: {own:g} >= {ratio:g}x {opp:g} but not drawn")
+    rep.checks.append(Check("imbalance", "fail" if problems else "ok", "; ".join(problems[:3])))
 
 
 def _check_poc(rep: ColumnReport, poc_row: int | None) -> None:
@@ -236,4 +268,66 @@ def validate_candles(candles: list, traded_prices: list[list[float]], step: floa
             low_ok = candle.low_clipped or bucket(candle.low, step, price_per_px) <= bottom + 1e-6
             checks.append(Check("range", "ok" if high_ok and low_ok else "fail",
                                 f"candle {candle.low:.2f}-{candle.high:.2f} vs traded rows {bottom:g}-{top:g}"))
+    return out
+
+
+def _row_sums(reports: list[ColumnReport]) -> tuple[dict[int, float], dict[int, float], dict[int, float], set[int]]:
+    """Per row: sum of (ask - bid), sum of (bid + ask), summed display tolerance, and the rows
+    that have an unreadable or hidden cell (their totals are unknown)."""
+    delta: dict[int, float] = {}
+    volume: dict[int, float] = {}
+    tol: dict[int, float] = {}
+    unknown: set[int] = set()
+    for rep in reports:
+        for row, cell in rep.cells:
+            if cell.ellipsis or cell.bid is None or cell.ask is None:
+                unknown.add(row)
+                continue
+            delta[row] = delta.get(row, 0.0) + cell.ask - cell.bid
+            volume[row] = volume.get(row, 0.0) + cell.ask + cell.bid
+            tol[row] = tol.get(row, 0.0) + cell.bid_tol + cell.ask_tol
+    return delta, volume, tol, unknown
+
+
+def validate_profile2(profile: list, reports: list[ColumnReport]) -> list[ProfileCheck]:
+    """Row checks for the centre-axis profile.
+
+    * delta:   printed delta == sum over bars of (ask - bid) on the row;
+    * volume:  printed volume == sum over bars of (bid + ask) on the row (the stronger test:
+               volume is never negative and cancels nothing);
+    * bars:    bar lengths are proportional to |delta| / volume (scales fitted from the rows);
+    * sign:    the delta bar colour agrees with the sign of the printed delta.
+    """
+    delta, volume, tol, unknown = _row_sums(reports)
+    d_scale = [r.delta_px / abs(r.delta) for r in profile if r.delta and abs(r.delta) >= 1000 and r.delta_px >= MIN_BAR_PX]
+    v_scale = [r.volume_px / r.volume for r in profile if r.volume and r.volume >= 1000 and r.volume_px >= MIN_BAR_PX]
+    ds = float(np.median(d_scale)) if d_scale else None
+    vs = float(np.median(v_scale)) if v_scale else None
+    out = []
+    for r in profile:
+        checks: list[Check] = []
+        out.append(ProfileCheck(r.row, r.price, f"{r.delta_raw}|{r.volume_raw}", checks))
+        if r.delta is None or r.volume is None:
+            checks.append(Check("text", "fail", f"unreadable profile text '{r.delta_raw}' | '{r.volume_raw}'"))
+            continue
+        if r.row in unknown:
+            checks.append(Check("cells", "skip", "a cell on this row is unreadable or hidden"))
+        elif r.row in delta or r.row in volume:
+            allowed_v = tol.get(r.row, 0.0) + table_tolerance(r.volume_raw) + SLACK
+            allowed_d = tol.get(r.row, 0.0) + table_tolerance(r.delta_raw.lstrip("-")) + SLACK
+            dv, dd = volume.get(r.row, 0.0) - r.volume, delta.get(r.row, 0.0) - r.delta
+            checks.append(Check("volume", "ok" if abs(dv) <= allowed_v else "fail",
+                                f"cells {volume.get(r.row, 0.0):.0f} vs profile {r.volume:.0f} (tol {allowed_v:.0f})"))
+            checks.append(Check("delta", "ok" if abs(dd) <= allowed_d else "fail",
+                                f"cells {delta.get(r.row, 0.0):.0f} vs profile {r.delta:.0f} (tol {allowed_d:.0f})"))
+        else:
+            checks.append(Check("cells", "ok" if abs(r.volume) <= table_tolerance(r.volume_raw) + SLACK else "fail", "no cells on this row"))
+        if ds and abs(r.delta) >= 1000 and ds * abs(r.delta) >= MIN_BAR_PX:
+            expect = ds * abs(r.delta)
+            ok = abs(r.delta_px - expect) <= 4.0 + 0.12 * expect + ds * table_tolerance(r.delta_raw.lstrip("-"))
+            checks.append(Check("delta_bar", "ok" if ok else "fail", f"bar {r.delta_px}px, expected {expect:.0f}px"))
+        if vs and r.volume >= 1000 and vs * r.volume >= MIN_BAR_PX:
+            expect = vs * r.volume
+            ok = abs(r.volume_px - expect) <= 4.0 + 0.12 * expect + vs * table_tolerance(r.volume_raw)
+            checks.append(Check("volume_bar", "ok" if ok else "fail", f"bar {r.volume_px}px, expected {expect:.0f}px"))
     return out

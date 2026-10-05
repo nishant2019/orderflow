@@ -333,7 +333,8 @@ def analyze(doc: dict, cfg: Thresholds | None = None) -> dict:
         out_bars.append(entry)
 
     analyzed = [b for b in out_bars if b["status"] == "analyzed"]
-    levels = build_levels(analyzed, step, doc["price"].get("current"), cfg)
+    # support/resistance are relative to the last close (the pink line is the profile POC, not the price)
+    levels = build_levels(analyzed, step, doc["price"].get("last_close"), cfg)
     return {
         "schema_version": SCHEMA_VERSION,
         "source": doc.get("source"),

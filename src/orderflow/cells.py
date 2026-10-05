@@ -41,8 +41,14 @@ def _is_orange(hsv_px: np.ndarray) -> np.ndarray:
     return (h >= ORANGE_H[0]) & (h <= ORANGE_H[1]) & (s > 150) & (v > 180)
 
 
-def ink_masks(img: np.ndarray, rect: CellRect) -> dict[str, np.ndarray]:
-    """Boolean masks (cell-shaped) of black, red and blue text pixels."""
+def ink_masks(img: np.ndarray, rect: CellRect, min_orange_share: float | None = None) -> dict[str, np.ndarray]:
+    """Boolean masks (cell-shaped) of black, red and blue text pixels.
+
+    Red and blue text only occurs on orange imbalance fills. By default a few orange pixels
+    anywhere in the rectangle count (single-column layout, where the orange bar can be tiny);
+    `min_orange_share` instead requires that share of the rectangle's middle band (split
+    layout, where the neighbouring row's orange box can leak into the margins).
+    """
     crop = img[rect.y0 : rect.y1, rect.x0 : rect.x1]
     hsv = cv2.cvtColor(crop, cv2.COLOR_BGR2HSV)
     b, g, r = (crop[..., i].astype(int) for i in range(3))
@@ -54,7 +60,12 @@ def ink_masks(img: np.ndarray, rect: CellRect) -> dict[str, np.ndarray]:
     blue = (b > 170) & (r < 110) & (g < 110)
     red = (r > 190) & (g < 90) & (b < 110)
     # red/blue text only occurs on orange imbalance fills; elsewhere red is a bar fill
-    on_orange = _is_orange(hsv).sum() >= 4  # even a tiny orange bar marks an imbalance cell
+    if min_orange_share is None:
+        on_orange = _is_orange(hsv).sum() >= 4  # even a tiny orange bar marks an imbalance cell
+    else:
+        h = hsv.shape[0]
+        band = _is_orange(hsv[h // 4 : h - h // 4])
+        on_orange = band.mean() >= min_orange_share
     if not on_orange:
         red = np.zeros_like(red)
         blue = np.zeros_like(blue)
@@ -107,7 +118,7 @@ def _remove_non_text(union: np.ndarray, glyph_h: float) -> np.ndarray:
     ink is a horizontal run much wider than a glyph are border lines.
     """
     out = union.copy()
-    tall = np.array([_longest_run(union[:, x]) > glyph_h * 1.4 for x in range(union.shape[1])])
+    tall = np.array([_longest_run(union[:, x]) > glyph_h * 1.25 for x in range(union.shape[1])])
     out[:, tall] = False
     wide = np.array([_longest_run(out[y]) > glyph_h * 2.6 for y in range(out.shape[0])])
     out[wide, :] = False
@@ -174,7 +185,7 @@ def _peel_dot(union: np.ndarray, x0: int, x1: int, typ_w: float) -> list[tuple[i
 
 
 def _split_run(proj: np.ndarray, x0: int, x1: int, typ_w: float) -> list[tuple[int, int]]:
-    """Split a run that is wider than one glyph at the weakest columns."""
+    """Split a run that is wider than one glyph at the weakest columns (single-column layout)."""
     n = int(round((x1 - x0) / typ_w))
     if n <= 1:
         return [(x0, x1)]
@@ -187,8 +198,29 @@ def _split_run(proj: np.ndarray, x0: int, x1: int, typ_w: float) -> list[tuple[i
     return [(edges[i], edges[i + 1]) for i in range(n)]
 
 
+def _split_run_advance(proj: np.ndarray, x0: int, x1: int, advance: float) -> list[tuple[int, int]]:
+    """Split a run of touching glyphs using the font's measured advance (split layout).
+
+    n glyphs occupy about n * advance - 1 px; a count that would leave a sliver narrower than
+    0.6 of a slot is rejected in favour of fewer glyphs.
+    """
+    n = max(1, int(round((x1 - x0 + 1) / advance)))
+    while n > 1:
+        cuts = []
+        for k in range(1, n):
+            mid = x0 + (x1 - x0) * k / n
+            lo, hi = max(x0 + 1, int(mid - 1.5)), min(x1 - 1, int(mid + 1.5) + 1)
+            cuts.append(lo + int(np.argmin(proj[lo : hi + 1])) if hi >= lo else int(mid))
+        edges = [x0, *cuts, x1]
+        if min(b - a for a, b in zip(edges, edges[1:])) >= 0.6 * advance:
+            return [(edges[i], edges[i + 1]) for i in range(n)]
+        n -= 1
+    return [(x0, x1)]
+
+
 def segment_glyphs(
-    masks: dict[str, np.ndarray], pitch: float, glyph_h: float, soft: np.ndarray | None = None
+    masks: dict[str, np.ndarray], pitch: float, glyph_h: float, soft: np.ndarray | None = None,
+    advance: float | None = None,
 ) -> list[Glyph]:
     """Glyphs of a cell, left to right: runs of ink columns, splitting touching glyphs."""
     union = np.zeros_like(masks["black"])
@@ -197,10 +229,13 @@ def segment_glyphs(
     union = _remove_non_text(union, glyph_h)
     union, band_top = _keep_text_band(union, glyph_h)
     proj = union.sum(axis=0)
-    typ_w = TYPICAL_W * glyph_h
+    typ_w = advance if advance else TYPICAL_W * glyph_h  # glyph slot width, used to split touching glyphs
     out = []
     for r0, r1 in _merge_close_runs(_column_runs(proj > 0), 1.1 * typ_w):
-        pieces = _split_run(proj, r0, r1, typ_w) if (r1 - r0) > 1.4 * typ_w else _peel_dot(union, r0, r1, typ_w)
+        if (r1 - r0) > 1.4 * typ_w:
+            pieces = _split_run_advance(proj, r0, r1, advance) if advance else _split_run(proj, r0, r1, typ_w)
+        else:
+            pieces = _peel_dot(union, r0, r1, typ_w)
         for x0, x1 in pieces:
             sub = union[:, x0:x1]
             rows = np.where(sub.any(axis=1))[0]
@@ -308,6 +343,7 @@ class CellText:
     confidence: float  # 0..1; low when glyphs matched poorly or the text did not parse
     bid_tol: float = 0.0  # half the last displayed digit: 3.5K is +-50, 326 is +-0.5
     ask_tol: float = 0.0
+    inferred: bool = False  # solved from the chart's totals because the text was unreadable
 
 
 _NUM = re.compile(r"^(\d+(?:\.\d+)?)([KM]?)$")

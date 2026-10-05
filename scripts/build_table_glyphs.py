@@ -15,7 +15,7 @@ DATA = ROOT / "tests" / "data"
 truth = json.loads((DATA / "table_truth.json").read_text())
 features, labels, shots = [], [], []
 for shot, rows in sorted(truth.items()):
-    img = cv2.imread(str(DATA / f"shot{shot}.png"))
+    img = cv2.imread(str(DATA / (f"shot{shot}.png" if shot.isdigit() else f"{shot}.png")))
     table = calibrate_table(img)
     gh = table_glyph_height(img, table)
     used = skipped = 0
@@ -32,8 +32,8 @@ for shot, rows in sorted(truth.items()):
             for g, ch in zip(glyphs, text):
                 features.append(glyph_features(g, gh))
                 labels.append(ch)
-                shots.append(int(shot))
-    print(f"shot {shot}: glyph height {gh}, {used} cells used, {skipped} skipped")
+                shots.append(int(shot) if shot.isdigit() else 100 + int(shot.replace('split', '')))
+    print(f"{shot}: glyph height {gh}, {used} cells used, {skipped} skipped")
 np.savez(
     ROOT / "src" / "orderflow" / "data" / "table_glyphs.npz",
     features=np.array(features, dtype=np.float32),
