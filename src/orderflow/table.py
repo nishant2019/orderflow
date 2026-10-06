@@ -59,8 +59,6 @@ def table_glyph_height(img: np.ndarray, table: TableGeometry) -> int:
 
 def cell_glyphs(img: np.ndarray, table: TableGeometry, row: int, col: int, glyph_h: float) -> list[Glyph]:
     ink, soft = cell_ink(img, table, row, col)
-    # faintly antialiased strokes can break into pieces one pixel apart (a K into stem and arms): rejoin them
-    ink = cv2.morphologyEx(ink.astype(np.uint8), cv2.MORPH_CLOSE, np.ones((2, 2), np.uint8)).astype(bool)
     zeros = np.zeros_like(ink)
     return segment_glyphs({"black": ink, "red": zeros, "blue": zeros}, table.pitch, glyph_h, soft)
 
