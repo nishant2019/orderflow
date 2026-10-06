@@ -343,3 +343,11 @@ def test_small_text_row_pitch_and_step():
     g = load_split_shot(Path(__file__).resolve().parents[1] / "shots" / "EBGNG_06-10-26.png")
     assert g.grid.pitch == pytest.approx(15.43, abs=0.05)
     assert g.grid.price_step == 1.0
+
+
+def test_row_pitch_ignores_stray_text_such_as_an_alert_badge():
+    """FIVESTAR (shots3) has an 'Alert @ 521.85' badge over the first column; its digits add spurious,
+    small spacings that used to give a 14.2 px pitch (step 0.43) instead of 21.35 px (step 0.65)."""
+    g = load_split_shot(Path(__file__).resolve().parents[1] / "shots3" / "FIVESTAR_06-10-26.png")
+    assert g.grid.pitch == pytest.approx(21.35, abs=0.1)
+    assert g.grid.price_step == 0.65

@@ -111,7 +111,11 @@ def fit_text_row_grid(img: np.ndarray, axis: PriceAxis, table: TableGeometry, bo
     uniq = np.array([np.mean(m) for m in merged])
     diffs = np.diff(uniq)
     diffs = diffs[diffs >= MIN_BOX_H]
-    pitch = float(np.median(diffs[diffs <= diffs.min() * 1.25]))
+    # the row pitch is the most common spacing (stray text, e.g. an alert badge, adds odd small gaps and
+    # skipped rows add multiples)
+    support = np.array([(np.abs(diffs - d) <= 1.5).sum() for d in diffs])
+    best_d = diffs[np.flatnonzero(support == support.max())].min()
+    pitch = float(np.mean(diffs[np.abs(diffs - best_d) <= 1.5]))
     # positions are whole pixels, so a true pitch of 15.4 shows as 15, 15, 16, 15, 16 ... and the median is
     # off by up to half a pixel: refine within 4 % by the lattice that the positions fit best
     best_err = np.inf
