@@ -95,15 +95,33 @@ def fit_text_row_grid(img: np.ndarray, axis: PriceAxis, table: TableGeometry, bo
             _, _, stats, _ = cv2.connectedComponentsWithStats(mask, connectivity=8)
             for x, y, w, h, area in stats[1:]:
                 if 5 <= h <= 12 and w >= 3:
-                    tops.append(y + y_lo)
+                    tops.append(y + h + y_lo)  # the baseline: digits and 'K' share it, their tops differ by a pixel
                     heights.append(h)
     if len(tops) < 8:
         raise ValueError("too little text to fit the row grid")
     glyph_h = int(np.bincount(heights).argmax())
     uniq = np.unique([t for t, h in zip(tops, heights) if abs(h - glyph_h) <= 1]).astype(float)
+    # glyphs of one row differ by a pixel in where their baseline lands: merge near-equal positions
+    merged: list[list[float]] = []
+    for t in uniq:
+        if merged and t - merged[-1][-1] <= 2:
+            merged[-1].append(t)
+        else:
+            merged.append([t])
+    uniq = np.array([np.mean(m) for m in merged])
     diffs = np.diff(uniq)
     diffs = diffs[diffs >= MIN_BOX_H]
     pitch = float(np.median(diffs[diffs <= diffs.min() * 1.25]))
+    # positions are whole pixels, so a true pitch of 15.4 shows as 15, 15, 16, 15, 16 ... and the median is
+    # off by up to half a pixel: refine within 4 % by the lattice that the positions fit best
+    best_err = np.inf
+    for cand in np.arange(pitch * 0.96, pitch * 1.04, 0.01):
+        kk = np.round((uniq - uniq[0]) / cand)
+        slope_c, icpt_c = np.polyfit(kk, uniq, 1)
+        err = float(np.abs(uniq - (icpt_c + kk * slope_c)).mean()) + 0.02 * abs(slope_c - cand)
+        if err < best_err - 1e-9:
+            best_err, best_pitch = err, cand
+    pitch = float(best_pitch)
     for _ in range(4):  # regression, dropping outliers each round
         k = np.round((uniq - uniq[0]) / pitch)
         slope, origin = np.polyfit(k, uniq, 1)
@@ -115,8 +133,8 @@ def fit_text_row_grid(img: np.ndarray, axis: PriceAxis, table: TableGeometry, bo
         pitch = slope
     k = np.round((uniq - uniq[0]) / pitch)
     pitch, text_origin = np.polyfit(k, uniq, 1)
-    # the number is vertically centred in its row: row top = text centre - pitch / 2
-    row_origin = text_origin + glyph_h / 2 - pitch / 2
+    # the number is vertically centred in its row: row top = text centre - pitch / 2 (centre = baseline - glyph_h / 2)
+    row_origin = text_origin - glyph_h / 2 - pitch / 2
     grid = RowGrid(float(pitch), float(row_origin), float(pitch) - 2, snap_step(float(pitch * abs(axis.slope))))
     return grid, grid.row_index(min(ys)), grid.row_index(max(ys)), glyph_h
 
@@ -127,6 +145,7 @@ from .cells import CellText, GlyphClassifier, display_tolerance, glyph_features,
 from .pipeline import ShotGeometry  # noqa: E402
 
 ORANGE_FILL_MIN = 0.25  # share of a box that must be orange to count as an imbalance box
+SMALL_PITCH = 17  # row pitches below this (px) hold small text
 ROW_INSET = 2  # px trimmed from the top and bottom of a box when reading text
 MIN_ORANGE_PIXELS = 300  # fewer orange fill pixels in the footprint area: the chart has imbalances switched off
 POC_LINE_FRACTION = 0.7  # of the pair's width, for a black row to count as an edge of the POC rectangle
@@ -150,7 +169,8 @@ class SplitShotGeometry(ShotGeometry):
         a, b = self.box.half(self.table, col, side)
         top = self.grid.row_top(row)
         # stay inside the box vertically: neighbouring rows' fills must not leak into the rectangle
-        return CellRect(col, row, a, b, int(round(top)) + ROW_INSET, int(round(top + self.grid.pitch)) - ROW_INSET)
+        inset = ROW_INSET if self.grid.pitch >= SMALL_PITCH else 1  # small text leaves no room to trim 2 px each side
+        return CellRect(col, row, a, b, int(round(top)) + inset, int(round(top + self.grid.pitch)) - inset)
 
     def half_glyphs(self, col: int, row: int, side: str) -> list[Glyph]:
         rect = self.half_rect(col, row, side)

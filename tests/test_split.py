@@ -335,3 +335,11 @@ def test_cum_delta_pane_candles_chain_through_the_table(docs):
             assert abs(c["close"] - cum) <= tol, (stem, i)
             assert c["low"] <= min(c["open"], c["close"]) + 1 and c["high"] >= max(c["open"], c["close"]) - 1
             assert (c["direction"] == "up") == (c["close"] >= c["open"]), (stem, i)
+
+
+def test_small_text_row_pitch_and_step():
+    """EBGNG (shots/): 7 px text, rows 15.4 px apart. Positions are whole pixels (15, 15, 16, ...), which a
+    median read as 14.65 px and a step of 0.95 instead of 1.0."""
+    g = load_split_shot(Path(__file__).resolve().parents[1] / "shots" / "EBGNG_06-10-26.png")
+    assert g.grid.pitch == pytest.approx(15.43, abs=0.05)
+    assert g.grid.price_step == 1.0
