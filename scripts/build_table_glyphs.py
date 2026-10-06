@@ -5,7 +5,6 @@ from pathlib import Path
 import cv2
 import numpy as np
 
-from orderflow.axis import calibrate_price_axis  # noqa: F401  (import check)
 from orderflow.calibrate import calibrate_table
 from orderflow.cells import glyph_features
 from orderflow.table import ROW_NAMES, cell_glyphs, table_glyph_height

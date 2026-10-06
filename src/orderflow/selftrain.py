@@ -15,7 +15,7 @@ from pathlib import Path
 import numpy as np
 
 from .cells import GlyphClassifier, glyph_features
-from .profile2 import ProfileRow2, read_profile2
+from .profile2 import read_profile2
 from .split import SplitShotGeometry, load_split_shot
 from .table import cell_glyphs as table_cell_glyphs
 from .table import read_table, table_glyph_height

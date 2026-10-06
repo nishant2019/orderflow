@@ -9,7 +9,7 @@ import numpy as np
 from .axis import PriceAxis, calibrate_price_axis
 from .calibrate import TableGeometry, calibrate_table
 from .cells import (
-    CellRect, CellText, Glyph, GlyphClassifier, cell_rect, estimate_glyph_height, glyph_features, ink_masks,
+    CellText, Glyph, GlyphClassifier, cell_rect, estimate_glyph_height, ink_masks,
     parse_cell, segment_glyphs, soft_ink_map,
 )
 from .rows import RowGrid, fit_row_grid

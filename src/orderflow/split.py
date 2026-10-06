@@ -13,9 +13,7 @@ import numpy as np
 
 from .axis import PriceAxis, calibrate_price_axis
 from .calibrate import TableGeometry, calibrate_table
-from .cells import (
-    CellRect, Glyph, _is_orange, estimate_glyph_height, ink_masks, segment_glyphs, soft_ink_map,
-)
+from .cells import CellRect, Glyph, _is_orange, ink_masks, segment_glyphs, soft_ink_map
 from .overlays import remove_dashed_price_line, remove_price_line
 from .rows import RowGrid, snap_step
 

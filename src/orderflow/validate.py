@@ -10,7 +10,7 @@ from dataclasses import dataclass, field
 
 import numpy as np
 
-from .cells import CellText, display_tolerance, parse_cell, GlyphClassifier
+from .cells import CellText, display_tolerance, GlyphClassifier
 from .pipeline import ShotGeometry
 from .table import TableColumn
 
@@ -183,8 +183,6 @@ def validate_profile(profile: list, reports: list[ColumnReport]) -> list[Profile
     * length: bar length is proportional to |value| (scale fitted from the rows themselves);
     * cells:  the value equals the sum of (ask - bid) over every bar's cell on that row.
     """
-    from .table import parse_signed  # local import: table imports cells, avoiding a cycle at import time
-
     # per-row sums over all bars; a row with an unreadable or "..." cell has unknown total
     sums: dict[int, float] = {}
     tols: dict[int, float] = {}

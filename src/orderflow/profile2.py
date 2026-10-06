@@ -10,7 +10,6 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
-import cv2
 import numpy as np
 
 from .cells import Glyph, GlyphClassifier, glyph_features, segment_glyphs

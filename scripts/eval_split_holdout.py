@@ -5,12 +5,10 @@ data that came from the held-out image), then read the held-out image and report
 passes the chart's own cross-checks. No label for the held-out image is used anywhere.
 """
 import json
-import sys
 from pathlib import Path
 
 import numpy as np
 
-from orderflow.cells import GlyphClassifier
 from orderflow.profile2 import read_profile2
 from orderflow.selftrain import train_rounds
 from orderflow.split import load_split_shot
