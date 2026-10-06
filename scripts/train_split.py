@@ -26,7 +26,7 @@ for d in ("shots", "shots2", "shots3"):  # the uploaded GoCharting shots
     stems += sorted(f"../../{d}/{p.stem}" for p in (ROOT / d).glob("*.png"))
 base = {"cells": load("cell_glyphs.npz"), "table": load("table_glyphs.npz"), "profile": load("profile_glyphs.npz")}
 manual = json.loads((T / "profile2_truth.json").read_text())
-_, extras = train_rounds(stems, base, T, manual, rounds=4)
+_, extras = train_rounds(stems, base, T, manual, rounds=3)
 for key, (features, labels) in extras.items():
     np.savez(R / f"split_{key}_glyphs.npz", features=features, labels=labels)
     print(key, features.shape, "".join(sorted(set(labels))))
