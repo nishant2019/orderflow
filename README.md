@@ -84,10 +84,12 @@ delta above vs below the POC. Defaults are in `Thresholds`; they are untested ag
 
 ## How well does it work?
 
-Leave-one-image-out on the 9 split screenshots (retrained without the held-out image and its hand
-transcriptions; `scripts/eval_split_holdout.py`): **106 / 109 bar columns and 113 / 120 profile rows pass every
-check, 1 of 502 cells unparseable** (then solved from totals). Six of the seven failing profile rows are the `M`
-suffix in the one image that has it. With all images in training every bar, row and candle validates.
+Leave-one-image-out on the 10 split screenshots (retrained without the held-out image and its hand
+transcriptions; `scripts/eval_split_holdout.py`; measured **before** the repair steps): **119 / 124 bar columns and
+128 / 136 profile rows pass every check, 7 of 566 cells unparseable** (those are then solved from totals or flagged).
+The weak spots are exactly the ones you would expect: the `M` suffix in the one image that has it (6 of the 8
+failing profile rows) and the newest, paler variant when it has never been seen (2 of 15 columns, 6 unparseable
+cells, mostly its cut-off first bar). With all images in training every readable bar, row and candle validates.
 
 ## Known limits
 
