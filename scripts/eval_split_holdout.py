@@ -19,7 +19,7 @@ from orderflow.validate import validate_columns, validate_profile2
 
 ROOT = Path(__file__).resolve().parents[1]
 R, T = ROOT / "src" / "orderflow" / "data", ROOT / "tests" / "data"
-stems = sorted(p.stem for p in T.glob("split[0-9].png"))
+stems = sorted(p.stem for p in T.glob("split[0-9]*.png"))
 manual = json.loads((T / "profile2_truth.json").read_text())
 
 

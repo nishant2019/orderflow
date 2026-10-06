@@ -16,14 +16,14 @@ from .calibrate import TableGeometry, calibrate_table
 from .cells import (
     CellRect, Glyph, _is_orange, estimate_glyph_height, ink_masks, segment_glyphs, soft_ink_map,
 )
-from .overlays import remove_price_line
+from .overlays import remove_dashed_price_line, remove_price_line
 from .rows import RowGrid, snap_step
 
 WHITE_MAX = 235  # a pixel with min(B,G,R) below this is part of a box (or ink)
 BLACK_MAX = 40  # pure-black ring pixels are not box fill
 MIN_BOX_H, MAX_BOX_H = 10, 48
 MIN_FILL = 0.45
-LEFT_MARGIN = 7  # px from the column's left edge before boxes can start (the candle sits there)
+LEFT_MARGIN = 0  # px from the column's left edge before boxes can start (candles are whitened beforehand)
 OUTER_INSET = 3  # px trimmed from the pair's outer edges when reading text
 
 
@@ -142,7 +142,7 @@ class SplitShotGeometry(ShotGeometry):
     advance: float = 0.0  # px between consecutive glyphs of the (monospace) cell font
     imbalance_ratio: float = 3.0  # the chart's imbalance setting (Ratio, 300 %); see docs/CHART_SETTINGS.md
     overrides: dict = field(default_factory=dict)  # (col, row) -> CellText, e.g. inferred cells
-    candle_window: tuple = (1, 8)  # px left/right of a column edge searched for its candle (the previous bar's boxes end 2 px before it, this bar's start at +9)
+    candle_window: tuple = (1, 8)  # px left/right of a column's left edge searched for its candle (measured per image)
 
     layout = "split"
 
@@ -236,6 +236,10 @@ class SplitShotGeometry(ShotGeometry):
         for row in range(self.k_first, self.k_last + 1):
             cell = self.overrides.get((col, row)) or self.read_cell(col, row, clf)
             if cell is not None:
+                if self.table.first_clipped and col == 0 and not cell.inferred:
+                    # a column cut by the image edge shows only part of its boxes: its text cannot be
+                    # trusted, so the cell counts as unreadable (and may be solved from the totals)
+                    cell = CellText("clipped", None, None, False, False, False, 0.0)
                 out.append((row, cell))
         return out
 
@@ -272,16 +276,45 @@ class SplitShotGeometry(ShotGeometry):
 
 
 _CANDLE_COLORS = (np.array([125, 157, 18]), np.array([50, 60, 233]))  # up (teal) / down (red)
-CANDLE_ZONE = (-10, 14)  # px around a column's left edge where its candle is drawn
+CANDLE_PAD = 2  # px added around the measured candle zone
 
 
-def _whiten_candles(img: np.ndarray, table: TableGeometry) -> np.ndarray:
-    """Copy of the image with candle strokes beside the boxes painted white, so a wick that
-    touches the first box cannot be mistaken for a digit."""
+def find_candle_zone(img: np.ndarray, table: TableGeometry, y0: int, y1: int) -> tuple[int, int]:
+    """Where, relative to a column's left edge, the candles are drawn: at the left edge in some
+    chart settings, in the centre gap between the bid and ask boxes in others. Measured from the
+    exact candle colours over all columns."""
+    hist = np.zeros(table.pitch.__int__() + 40, dtype=float)
+    shift = 10
+    for col in range(table.n_cols):
+        x0, x1 = table.col_x(col)
+        if table.first_clipped and col == 0:
+            continue
+        a, b = max(x0 - shift, 0), min(x1 + 10, img.shape[1])
+        win = img[y0:y1, a:b].astype(np.int32)
+        for color in _CANDLE_COLORS:
+            m = np.abs(win - color).sum(axis=2) < 30
+            for off, n in zip(range(a - x0 + shift, b - x0 + shift), m.sum(axis=0)):
+                if 0 <= off < len(hist):
+                    hist[off] += n
+    if hist.max() < 20:
+        return (0, 7)  # no candles found: the left-edge default
+    peak = int(hist.argmax())
+    on = hist >= 0.2 * hist.max()
+    lo = hi = peak
+    while lo > 0 and on[lo - 1]:
+        lo -= 1
+    while hi < len(hist) - 1 and on[hi + 1]:
+        hi += 1
+    return lo - shift, hi - shift + 1
+
+
+def _whiten_candles(img: np.ndarray, table: TableGeometry, zone: tuple[int, int]) -> np.ndarray:
+    """Copy of the image with candle strokes painted white, so a wick that touches a box
+    cannot be mistaken for a digit (and does not distort the box measurements)."""
     out = img.copy()
     for col in range(table.n_cols):
         x0, _ = table.col_x(col)
-        a, b = max(x0 + CANDLE_ZONE[0], 0), x0 + CANDLE_ZONE[1]
+        a, b = max(x0 + zone[0] - CANDLE_PAD, 0), x0 + zone[1] + CANDLE_PAD
         region = out[:, a:b]
         for color in _CANDLE_COLORS:
             region[np.abs(region.astype(np.int32) - color).sum(axis=2) < 30] = 255
@@ -294,12 +327,15 @@ def load_split_shot(path: str) -> SplitShotGeometry:
         raise FileNotFoundError(path)
     axis = calibrate_price_axis(img)
     table = calibrate_table(img)
-    clean = remove_price_line(img, axis, table)
+    clean = remove_dashed_price_line(remove_price_line(img, axis, table), table.y_top)
     ys = [y for y, _ in axis.labels]
-    box = find_box_geometry(clean, table, int(min(ys)) - 25, int(max(ys)) + 25)
-    grid, k_first, k_last, glyph_h = fit_text_row_grid(clean, axis, table, box)
-    geo = SplitShotGeometry(clean, axis, table, grid, k_first, k_last, glyph_h, box, raw=img,
-                            text_img=_whiten_candles(clean, table))
+    y_lo, y_hi = int(min(ys)) - 25, int(max(ys)) + 25
+    zone = find_candle_zone(clean, table, y_lo, y_hi)
+    text_img = _whiten_candles(clean, table, zone)
+    box = find_box_geometry(text_img, table, y_lo, y_hi)
+    grid, k_first, k_last, glyph_h = fit_text_row_grid(text_img, axis, table, box)
+    geo = SplitShotGeometry(clean, axis, table, grid, k_first, k_last, glyph_h, box, raw=img, text_img=text_img,
+                            candle_window=(CANDLE_PAD - zone[0], zone[1] + CANDLE_PAD))
     geo.advance = _estimate_advance(geo)
     return geo
 

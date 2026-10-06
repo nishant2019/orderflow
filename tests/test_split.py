@@ -23,9 +23,10 @@ from orderflow.table import read_table
 from orderflow.validate import validate_columns
 
 DATA = Path(__file__).parent / "data"
-STEMS = [f"split{k}" for k in range(1, 10)]
-STEPS = dict(zip(STEMS, [0.9, 0.55, 0.7, 1.0, 15.0, 15.0, 2.0, 5.0, 2.0]))
-BARS = dict(zip(STEMS, [13, 13, 13, 13, 5, 13, 13, 13, 13]))
+STEMS = [f"split{k}" for k in range(1, 11)]
+STEPS = dict(zip(STEMS, [0.9, 0.55, 0.7, 1.0, 15.0, 15.0, 2.0, 5.0, 2.0, 5.0]))
+BARS = dict(zip(STEMS, [13, 13, 13, 13, 5, 13, 13, 13, 13, 15]))
+CLIPPED = {"split10": [0]}  # bars cut off by the left image edge: skipped, never failed
 MODELS = load_split_classifiers()
 
 
@@ -63,14 +64,16 @@ def test_row_grid_and_step(geos, docs, stem):
 def test_every_bar_validates(docs, stem):
     d = docs[stem]
     assert d["summary"]["bars"] == BARS[stem]
-    assert d["summary"]["flagged_bars"] == [] and d["summary"]["skipped_bars"] == []
-    assert d["summary"]["valid_bars"] == BARS[stem]
+    assert d["summary"]["flagged_bars"] == [] and d["summary"]["skipped_bars"] == CLIPPED.get(stem, [])
+    assert d["summary"]["valid_bars"] == BARS[stem] - len(CLIPPED.get(stem, []))
     assert d["summary"]["flagged_ohlc"] == []
 
 
 @pytest.mark.parametrize("stem", STEMS)
 def test_poc_box_is_the_largest_cell_of_every_bar(docs, stem):
     for b in docs[stem]["bars"]:
+        if b["index"] in CLIPPED.get(stem, []):
+            continue
         cells = [c for c in b["cells"] if "total" in c]
         assert b["poc_price"] is not None
         poc = next(c for c in cells if c["price"] == b["poc_price"])
@@ -81,6 +84,8 @@ def test_poc_box_is_the_largest_cell_of_every_bar(docs, stem):
 @pytest.mark.parametrize("stem", STEMS)
 def test_imbalance_flags_follow_the_300_percent_rule(docs, stem):
     for b in docs[stem]["bars"]:
+        if b["index"] in CLIPPED.get(stem, []):
+            continue
         assert any(c["name"] == "imbalance" and c["status"] == "ok" for c in b["checks"]), (stem, b["index"])
 
 
@@ -88,8 +93,8 @@ def test_imbalance_flags_follow_the_300_percent_rule(docs, stem):
 def test_candles_present_and_valid(docs, stem):
     for b in docs[stem]["bars"]:
         o = b["ohlc"]
-        if stem == "split2" and b["index"] == 12:
-            continue  # a bar with no candle drawn in the visible window
+        if (stem == "split2" and b["index"] == 12) or b["index"] in CLIPPED.get(stem, []):
+            continue  # no candle in the visible window / bar cut off by the image edge
         assert o is not None and o["valid"], (stem, b["index"])
         assert o["low"] <= min(o["open"], o["close"]) + 1e-9 and max(o["open"], o["close"]) <= o["high"] + 1e-9
 
@@ -103,7 +108,7 @@ def test_the_pink_line_is_the_profile_poc_not_the_last_close(docs):
             continue
         seen += 1
         assert abs(line - ps["poc"]) <= 0.1 * d["price"]["step_per_row"], stem
-    assert seen == 8
+    assert seen == 9
     # ... while it is often NOT the last close (up to ~9 rows away): it marks the profile POC
     gaps = [abs(docs[s]["price"]["poc_line"] - docs[s]["price"]["last_close"]) / docs[s]["price"]["step_per_row"]
             for s in STEMS if docs[s]["price"]["poc_line"]]
@@ -241,3 +246,40 @@ def test_imbalance_check_catches_a_misread_cell(geos):
 def test_json_roundtrip(docs):
     for d in docs.values():
         assert json.loads(json.dumps(d)) == d
+
+
+# --- the variant with pale fills, centre-gap candles, a clipped first bar and a dashed price line ---
+
+def test_dashed_red_line_is_the_current_price(docs):
+    # the right-axis tag of split10 reads 1,403.9; the line is measured to within a pixel (0.2)
+    assert docs["split10"]["price"]["current"] == pytest.approx(1403.9, abs=0.5)
+    assert docs["split10"]["price"]["poc_line"] == pytest.approx(1395.0, abs=0.5)  # the solid pink line, labelled 1395
+    for stem in STEMS[:-1]:
+        assert docs[stem]["price"]["current"] is None  # the other charts draw no dashed line
+
+
+def test_candle_zone_is_measured_per_image(geos):
+    assert geos["split10"].candle_window[0] < -30  # candles sit in the centre gap of the pair
+    assert all(geos[s].candle_window[0] > 0 for s in STEMS[:-1])  # elsewhere: at the column's left edge
+    assert geos["split10"].box.left[0] <= 3  # boxes start at the column edge (no fixed margin)
+
+
+def test_clipped_first_bar_cells_are_solved_from_the_profile(docs):
+    bar0 = docs["split10"]["bars"][0]
+    assert bar0["clipped"] and not bar0["valid"]
+    solved = [c for c in bar0["cells"] if c.get("inferred")]
+    assert {c["price"] for c in solved} >= {1355.0, 1350.0, 1345.0}
+    assert all(c["uncertainty"] < 4000 for c in solved)
+
+
+def test_profile_text_misread_is_corrected(docs):
+    # the top delta label is '8K'; the reader first sees '5K', which breaks the row total
+    row = next(p for p in docs["split10"]["profile"] if p["price"] == 1405.0)
+    assert (row["corrected_from"], row["delta_text"], row["delta"]) == ("5K|145K", "8K", 8000.0)
+    assert docs["split10"]["summary"]["corrected_profile_rows"] == 1
+
+
+def test_the_dashed_line_does_not_corrupt_the_text_under_it(docs):
+    top = {c["price"]: c for c in docs["split10"]["bars"][13]["cells"] if "bid" in c}
+    assert (top[1405.0]["bid"], top[1405.0]["ask"]) == (19000.0, 51000.0)  # '19K | 51K' sits right under the line
+    assert docs["split10"]["bars"][14]["valid"]

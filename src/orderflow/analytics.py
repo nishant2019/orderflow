@@ -345,9 +345,13 @@ def analyze(doc: dict, cfg: Thresholds | None = None) -> dict:
         out_bars.append(entry)
 
     analyzed = [b for b in out_bars if b["status"] == "analyzed"]
-    # support/resistance are relative to the last close (the pink line is the profile POC, not the price)
+    # support/resistance are relative to the current price when the chart draws it (red dashed line),
+    # else the last close. The solid pink line is the profile POC, not the price.
+    reference = doc["price"].get("current")
+    if reference is None:
+        reference = doc["price"].get("last_close")
     prof = profile_analysis(doc, cfg)
-    levels = build_levels(analyzed, step, doc["price"].get("last_close"), cfg,
+    levels = build_levels(analyzed, step, reference, cfg,
                           extra_points=profile_points(prof) if prof else None)
     return {
         "schema_version": SCHEMA_VERSION,
@@ -395,7 +399,10 @@ def profile_analysis(doc: dict, cfg: Thresholds | None = None) -> dict | None:
     poc = rows[poc_i]
     median = float(np.median(vols[vols > 0])) if (vols > 0).any() else 0.0
     va = [r for r in rows if r["in_value_area"]]
-    last = doc["price"].get("last_close")
+    last = doc["price"].get("current")  # the chart's own current-price line, when drawn
+    reference = "current"
+    if last is None:
+        last, reference = doc["price"].get("last_close"), "last_close"
 
     out: dict = {
         "poc": {"price": poc["price"], "volume": poc["volume"], "share_of_volume": round(poc["volume"] / total, 3),
@@ -413,9 +420,10 @@ def profile_analysis(doc: dict, cfg: Thresholds | None = None) -> dict | None:
             "note": "colour-coded by the chart; not always contiguous",
         }
         if last is not None:
-            out["last_close_vs_value_area"] = (
+            out["reference_price"] = {"price": last, "source": reference}
+            out["price_vs_value_area"] = (
                 "above" if last > vah + step / 2 else "below" if last < val - step / 2 else "inside")
-            out["last_close_distance_from_poc_steps"] = round((last - poc["price"]) / step, 2)
+            out["price_distance_from_poc_steps"] = round((last - poc["price"]) / step, 2)
 
     # high / low volume nodes: local extrema relative to the typical row
     hvn, lvn = [], []

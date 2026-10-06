@@ -21,7 +21,7 @@ def load(name):
     return d["features"], d["labels"]
 
 
-stems = sorted(p.stem for p in T.glob("split[0-9].png"))
+stems = sorted(p.stem for p in T.glob("split[0-9]*.png"))
 base = {"cells": load("cell_glyphs.npz"), "table": load("table_glyphs.npz"), "profile": load("profile_glyphs.npz")}
 manual = json.loads((T / "profile2_truth.json").read_text())
 _, extras = train_rounds(stems, base, T, manual, rounds=4)

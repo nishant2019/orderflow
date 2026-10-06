@@ -76,6 +76,9 @@ def infer_unreadable(geo, reports: list, table: list[TableColumn], profile: list
     return out
 
 
+MIN_FIX_MARGIN = 0.5  # a correction must beat the runner-up by this much (errors are in units of the allowed tolerance)
+
+
 # --- correcting misreads with the chart's own checks --------------------------------------------
 
 @dataclass(frozen=True)
@@ -164,3 +167,58 @@ def correct_misreads(geo, clf, reports: list, table: list[TableColumn], profile:
         if len(found) == 1:
             fixes.append(found[0])
     return fixes
+
+
+def correct_profile_misreads(geo, clf, reports: list, profile: list) -> list:
+    """Fix a single-glyph misread in a profile row's own text (e.g. `8K` read as `5K`).
+
+    Only rows whose totals fail are touched, and only when one single-glyph alternative of the
+    delta or volume text fits the cells essentially exactly while every other alternative fits
+    clearly worse (or is the only one that fits). Returns the profile
+    with corrected rows replaced (marked with `corrected_from`).
+    """
+    from dataclasses import replace
+
+    from .cells import glyph_features
+    from .table import parse_signed
+    from .validate import SLACK, _row_sums, table_tolerance, validate_profile2
+
+    delta, volume, tol, unknown = _row_sums(reports)
+    bad_rows = {p.row for p in validate_profile2(profile, reports) if not p.ok}
+    out = []
+    for row in profile:
+        if row.row not in bad_rows or row.row in unknown or row.row not in volume:
+            out.append(row)
+            continue
+        found = []
+        for which, glyphs, raw in (("delta", row.delta_glyphs, row.delta_raw), ("volume", row.volume_glyphs, row.volume_raw)):
+            feats = [glyph_features(g, geo.glyph_h) for g in glyphs]
+            best = [clf.classify(f)[0] for f in feats]
+            for i, f in enumerate(feats):
+                if best[i] in ".K-M":
+                    continue
+                for alt in clf.alternatives(f):
+                    if not alt.isdigit():
+                        continue
+                    text = "".join(best[:i]) + alt + "".join(best[i + 1 :])
+                    d_text = text if which == "delta" else row.delta_raw
+                    v_text = text if which == "volume" else row.volume_raw
+                    d_val, v_val = parse_signed(d_text), parse_signed(v_text)
+                    if d_val is None or v_val is None:
+                        continue
+                    allowed_v = tol.get(row.row, 0.0) + table_tolerance(v_text) + SLACK
+                    allowed_d = tol.get(row.row, 0.0) + table_tolerance(d_text.lstrip("-")) + SLACK
+                    err_v = abs(volume[row.row] - v_val) / allowed_v
+                    err_d = abs(delta[row.row] - d_val) / allowed_d
+                    if err_v <= 1.0 and err_d <= 1.0:
+                        found.append((err_v + err_d, d_text, v_text, d_val, v_val))
+        found = sorted(set(found))
+        # accept the best candidate if it is the only one that fits, or beats every rival by a
+        # clear margin (errors are summed, in units of the allowed tolerance)
+        if found and (len(found) == 1 or found[1][0] - found[0][0] >= MIN_FIX_MARGIN):
+            _, d_text, v_text, d_val, v_val = found[0]
+            out.append(replace(row, delta_raw=d_text, volume_raw=v_text, delta=d_val, volume=v_val,
+                               corrected_from=f"{row.delta_raw}|{row.volume_raw}", confidence=0.6))
+        else:
+            out.append(row)
+    return out

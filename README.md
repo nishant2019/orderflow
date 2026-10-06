@@ -38,15 +38,18 @@ screenshots were taken with are in `docs/CHART_SETTINGS.md` (imbalance = Ratio, 
 | Time axis | per bar time, session starts (inferred time for the date-labelled bar) |
 | Price axis | pixel→price fit, row pitch, **price step per row** (0.9, 0.55, 0.7, 1, 2, 5, 15 …) |
 | Profile (split) | per price: delta, volume, value-area membership, peak row; POC, value-area high/low |
-| `price.poc_line` | the pink horizontal line (see below) |
+| `price.poc_line` | the solid pink horizontal line (the profile POC, see below) |
+| `price.current` | the red *dashed* line with a price tag on the right axis (current price), when the chart draws it |
 
 All values are **as displayed** (`3.5K` means 3500 ± 50). Each bar and profile row carries its own `checks`
 and a `valid` flag; `summary` lists flagged and skipped bars.
 
-### The pink line is the profile POC, not the current price
-In all 8 split charts that have both, the pink line sits on the profile's highest-volume row (within
-0.03 of a row) and is often far from the last close (up to ~9 rows). It is reported as `price.poc_line`;
-the last candle's close is `price.last_close`. (Please confirm this reading of the platform.)
+### The solid pink line is the profile POC, not the current price
+In all 9 split charts that have both, the solid pink line (labelled with its price at the left edge) sits on the
+profile's highest-volume row (within 0.03 of a row) and is often far from the last close (up to ~9 rows); the
+user confirmed it is the POC line. It is reported as `price.poc_line`. The *current price* is the red **dashed**
+line with a tag on the right axis (`price.current`, drawn in some chart settings); the last candle's close is
+`price.last_close`.
 
 ## Validation: why you can trust a number
 
@@ -91,6 +94,8 @@ suffix in the one image that has it. With all images in training every bar, row 
 * GoCharting only, these two layouts. A new font size, theme or settings combination needs new examples;
   a number format never seen in training (e.g. `M` before it was added) will be misread — the checks flag it.
 * Overlays not handled: the amber **"VPOC <day>" line** (seen once, as an image I could not open as a file).
+* A clipped first bar (cut by the image edge) is not read; its cells are solved from the profile rows when only that
+  column is unknown on a row.
 * The colour-coded value area is not always contiguous (the platform seems to colour at a finer resolution).
 * Gap rows (no trades) are not drawn; the platform's imbalance rule next to a gap is not visible, so those pairs
   are not checked.

@@ -312,7 +312,7 @@ def glyph_features(glyph: Glyph, glyph_h: float) -> np.ndarray:
 
 
 CONFUSABLE = {  # digit pairs that read alike at 7-10 px; the first guess is often the wrong one of these
-    "3": "8", "8": "3 0 6 9", "0": "8", "6": "5 8", "5": "6 3", "9": "8", "7": "2 1", "2": "7", "1": "7 4", "4": "1",
+    "3": "8 5", "8": "3 0 6 9 5", "0": "8", "6": "5 8", "5": "6 3 8", "9": "8", "7": "2 1", "2": "7", "1": "7 4", "4": "1",
 }
 
 
@@ -329,17 +329,17 @@ class GlyphClassifier:
 
     def alternatives(self, feat: np.ndarray) -> list[str]:
         """Other labels worth trying for this glyph: its nearest neighbours' labels plus the
-        digits it is commonly confused with."""
+        digits it is commonly confused with (relative to the label `classify` would return)."""
+        best = self.classify(feat)[0]
         d = ((self.features - feat[None]) ** 2).sum(axis=1)
         order = np.argsort(d)[:8]
-        best = str(self.labels[order[0]])
         alts: list[str] = []
-        for i in order[1:]:
+        for i in order:
             lab = str(self.labels[i])
             if lab != best and lab not in alts and d[i] <= 2.5 * d[order[0]] + 3.0:
                 alts.append(lab)
         for lab in CONFUSABLE.get(best, "").split():
-            if lab not in alts:
+            if lab != best and lab not in alts:
                 alts.append(lab)
         return alts
 

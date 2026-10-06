@@ -13,3 +13,16 @@
 
 Box *fill intensity* encodes relative volume (light -> dark), so it can be used to sanity-check
 a number the text reader is unsure about. A pale lavender/pink box with `0` marks a zero-volume side.
+
+## Variant B (`split10.png`): paler fills, centred candles, a current-price line
+
+Same layout and the same imbalance / POC settings (Ratio 300 %, black Volume POC), but:
+
+| Difference | Handling |
+|---|---|
+| Gradient *light* ends are almost white (sell: very pale pink, buy: very pale green), so low-volume boxes are barely tinted | boxes are found by "not white", not by saturation; text is found by a black-hat filter, which does not depend on the fill |
+| Imbalance swatches are orange / purple / red | the text colours are unchanged: pure blue (buy) and crimson (sell) on orange |
+| Candles are drawn **in the centre gap** between the bid and ask boxes (12 px gap, boxes ~37 px wide) instead of at the column's left edge | the candle zone is measured per image from the exact candle colours; boxes start right at the column edge |
+| A **red dashed horizontal line** with a price tag on the right axis | it is the *current price* (`price.current`); it is patched out of the image before the text is read, because it runs through the digits |
+| The solid pink line labelled with a price (here `1395`) is still the **profile POC** | `price.poc_line` |
+| The first bar is cut off by the left image edge | its cells are not read; they are solved from the profile row totals where possible |

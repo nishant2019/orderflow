@@ -46,6 +46,7 @@ class ProfileRow2:
     confidence: float
     delta_glyphs: tuple = ()  # the segmented glyphs, kept for training
     volume_glyphs: tuple = ()
+    corrected_from: str = ""  # "delta|volume" text before a single-glyph correction by the checksums
 
 
 def find_axis(geo: ShotGeometry) -> int | None:

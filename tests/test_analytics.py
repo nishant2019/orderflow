@@ -330,7 +330,8 @@ def test_profile_poc_value_area_nodes_and_tails():
     assert [n["price"] for n in p["high_volume_nodes"]] == [108.0]  # 45K: local peak above 1.25x the median row
     assert [n["price"] for n in p["low_volume_nodes"]] == [107.0]  # 15K: a trough between two bigger rows
     assert p["thin_tails"] == {"high_rows": 1, "low_rows": 1}  # 6K and 5K are <= 10% of the POC row
-    assert p["last_close_vs_value_area"] == "inside" and p["last_close_distance_from_poc_steps"] == 0.0
+    assert p["price_vs_value_area"] == "inside" and p["price_distance_from_poc_steps"] == 0.0
+    assert p["reference_price"] == {"price": 104.0, "source": "last_close"}
 
 
 def test_profile_aggressive_rows_need_volume_and_one_sidedness():
@@ -353,7 +354,7 @@ def test_profile_shape_and_last_close_position():
     assert profile_analysis(balanced)["shape"]["type"] == "D"
     above = profile_analysis(profile_doc(VOLS, DELTAS, va=(2, 8), last_close=112.0))
     below = profile_analysis(profile_doc(VOLS, DELTAS, va=(2, 8), last_close=99.0))
-    assert above["last_close_vs_value_area"] == "above" and below["last_close_vs_value_area"] == "below"
+    assert above["price_vs_value_area"] == "above" and below["price_vs_value_area"] == "below"
 
 
 def test_profile_ignores_unvalidated_rows_and_single_column_charts():
@@ -399,3 +400,15 @@ def real_split():
         d = parse_screenshot(DATA / f"split{k}.png")
         out[f"split{k}"] = (d, analyze(d))
     return out
+
+
+def test_current_price_line_is_preferred_over_the_last_close():
+    d = profile_doc(VOLS, DELTAS, va=(2, 8), last_close=104.0)
+    d["price"]["current"] = 111.0
+    from orderflow.analytics import profile_analysis
+
+    p = profile_analysis(d)
+    assert p["reference_price"] == {"price": 111.0, "source": "current"} and p["price_vs_value_area"] == "above"
+    d["bars"] = [bar(0, [cell(100 + k, 600, 700) for k in range(8)], poc=104)]
+    lv = next(lv for lv in analyze(d)["levels"] if lv["price"] == 104.0)
+    assert lv["role"] == "support" and lv["distance_steps"] == -7.0  # measured from 111, not 104

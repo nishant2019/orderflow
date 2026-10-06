@@ -11,11 +11,11 @@ from .candles import Candle, bucket, find_candles
 from .cells import CellText
 from .layout import detect_layout
 from .models import Classifiers, SplitClassifiers, load_classifiers, load_split_classifiers
-from .overlays import find_current_price_line
+from .overlays import find_current_price_line, find_dashed_price_line
 from .pipeline import ShotGeometry, load_shot
 from .profile import read_profile
 from .profile2 import read_profile2
-from .repair import correct_misreads, infer_unreadable
+from .repair import correct_misreads, correct_profile_misreads, infer_unreadable
 from .split import load_split_shot
 from .calibrate import calibrate_table
 from .table import TableColumn, read_table
@@ -163,7 +163,7 @@ def _profile_json(rows: list, checks: list[ProfileCheck]) -> list[dict]:
     return sorted(out, key=lambda p: -p["price"])
 
 
-def _price_json(geo: ShotGeometry, line, candles: list) -> dict:
+def _price_json(geo: ShotGeometry, line, candles: list, current=None) -> dict:
     last = next((c for c in reversed(candles) if c is not None), None)
     return {
         "step_per_row": geo.grid.price_step,
@@ -172,6 +172,8 @@ def _price_json(geo: ShotGeometry, line, candles: list) -> dict:
         # highest-volume row and is usually far from the last close, so it is reported as the
         # profile POC line (an assumption to confirm), not as the current price.
         "poc_line": None if line is None else round(line.price, 3),
+        # the red DASHED line with a price tag on the right axis (present in some chart settings)
+        "current": None if current is None else round(current.price, 3),
         "last_close": None if last is None else round(last.close, 3),
         # bars extending beyond this range are cut off by the view
         "visible": {
@@ -189,6 +191,7 @@ def _profile2_json(rows: list, checks: list[ProfileCheck]) -> tuple[list[dict], 
             "price": r.price,
             "delta": r.delta, "delta_text": r.delta_raw,
             "volume": r.volume, "volume_text": r.volume_raw,
+            **({"corrected_from": r.corrected_from} if r.corrected_from else {}),
             "zone": r.zone,  # value_area | outside | peak (the highlighted row)
             "in_value_area": r.zone in ("value_area", "peak"),
             "bar_px": {"delta": r.delta_px, "volume": r.volume_px},
@@ -213,7 +216,7 @@ def _profile2_json(rows: list, checks: list[ProfileCheck]) -> tuple[list[dict], 
 
 
 def _build(path, geo: ShotGeometry, layout: str, table, reports, labels, profile, profile_kind, profile_summary,
-           candles, line, inferred, corrected=0) -> dict:
+           candles, line, inferred, corrected=0, current=None) -> dict:
     times = infer_times(labels)
     poc = geo.find_poc_rows()
     traded = [
@@ -235,7 +238,7 @@ def _build(path, geo: ShotGeometry, layout: str, table, reports, labels, profile
         "layout": layout,
         "source": str(path),
         "image": {"height": int(geo.img.shape[0]), "width": int(geo.img.shape[1])},
-        "price": _price_json(geo, line, candles),
+        "price": _price_json(geo, line, candles, current),
         "bars": bars,
         "profile_kind": profile_kind,
         "profile": profile,
@@ -249,6 +252,7 @@ def _build(path, geo: ShotGeometry, layout: str, table, reports, labels, profile
             "flagged_profile_prices": [p["price"] for p in profile if not p["valid"]],
             "inferred_cells": inferred,
             "corrected_cells": corrected,
+            "corrected_profile_rows": sum(1 for p in profile if p.get("corrected_from")),
             "approximate": "cell volumes are as displayed (3.5K = 3500 +-50); table and profile values likewise",
         },
     }
@@ -296,6 +300,7 @@ def _parse_split(path, models: SplitClassifiers) -> dict:
     if fixes:
         geo.overrides.update({(f.col, f.row): f.cell for f in fixes})
         reports = validate_columns(geo, table, models.cells)
+    profile_rows = correct_profile_misreads(geo, models.profile, reports, profile_rows)
     inferred = infer_unreadable(geo, reports, table, profile_rows)
     if inferred:  # cover-ups (e.g. the price-line label) are solved from the profile row / table
         geo.overrides.update({(i.col, i.row): i.cell for i in inferred})
@@ -303,8 +308,9 @@ def _parse_split(path, models: SplitClassifiers) -> dict:
     profile, summary = _profile2_json(profile_rows, validate_profile2(profile_rows, reports))
     labels = read_labels(geo.img, geo.table, models.labels)
     line = find_current_price_line(geo.raw, geo.axis, y_limit=geo.table.y_top)
+    current = find_dashed_price_line(geo.raw, geo.axis, y_limit=geo.table.y_top)
     return _build(path, geo, "split", table, reports, labels, profile, "delta_volume", summary,
-                  find_candles(geo), line, len(inferred), len(fixes))
+                  find_candles(geo), line, len(inferred), len(fixes), current)
 
 
 def to_json(path: str | Path, pretty: bool = True, layout: str = "auto") -> str:

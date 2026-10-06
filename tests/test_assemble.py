@@ -30,7 +30,7 @@ def test_json_serialisable(parsed):
 def test_price_block(parsed, shot, step, poc_line):
     price = parsed[shot]["price"]
     assert price["step_per_row"] == step
-    assert "current" not in price  # the pink line is not the current price (see price.poc_line)
+    assert price["current"] is None  # the solid pink line is the profile POC, not the price; no dashed line here
     if poc_line is None:
         assert price["poc_line"] is None
     else:
