@@ -9,6 +9,7 @@ the process repeats so that cells that failed before get another chance.
 """
 from __future__ import annotations
 
+from concurrent.futures import ProcessPoolExecutor
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -18,7 +19,7 @@ from .cells import GlyphClassifier, glyph_features
 from .profile2 import read_profile2
 from .split import SplitShotGeometry, load_split_shot
 from .table import cell_glyphs as table_cell_glyphs
-from .table import read_table, table_glyph_height
+from .table import estimate_advance, read_table, table_glyph_height
 from .validate import ColumnReport, validate_columns, validate_profile2
 
 DATA = Path(__file__).parent / "data"
@@ -89,6 +90,7 @@ def verify_image(path: str | Path, models: Classifiers3) -> Verified:
             out.n_cells += 1
 
     gh = table_glyph_height(geo.img, geo.table)
+    adv = estimate_advance(geo.img, geo.table, gh)
     for col, rep in enumerate(reports):
         col_ok = rep.ok and not table[col].clipped and any(c.name in ("cum",) and c.status == "ok" for c in rep.checks)
         for r, name in enumerate(("volume", "delta", "cum")):
@@ -96,7 +98,7 @@ def verify_image(path: str | Path, models: Classifiers3) -> Verified:
             cell = getattr(table[col], name)
             if not col_ok or cell.value is None:
                 continue
-            glyphs = table_cell_glyphs(geo.img, geo.table, r, col, gh)
+            glyphs = table_cell_glyphs(geo.img, geo.table, r, col, gh, adv)
             if len(glyphs) == len(cell.raw):
                 out.table.add(glyphs, cell.raw, gh)
                 out.n_table += 1
@@ -138,6 +140,16 @@ def _merge(base: tuple[np.ndarray, np.ndarray], extra: Samples) -> tuple[np.ndar
     return np.concatenate([base[0], f]), np.concatenate([base[1], l])
 
 
+WORKERS = 4
+
+
+def _verify_or_none(path, models):
+    try:
+        return verify_image(path, models)
+    except ValueError:
+        return None
+
+
 def train_rounds(stems: list[str], base: dict[str, tuple[np.ndarray, np.ndarray]], tests_dir: Path,
                  manual_profile: dict[str, list[list[str]]], rounds: int = 3, verbose: bool = True):
     """Iteratively grow the classifiers from verified glyphs. Returns (classifiers, extras)
@@ -148,12 +160,13 @@ def train_rounds(stems: list[str], base: dict[str, tuple[np.ndarray, np.ndarray]
     for rnd in range(1, rounds + 1):
         acc = {"cells": Samples(), "table": Samples(), "profile": Samples()}
         totals = [0] * 6
-        for stem in stems:
-            try:
-                v = verify_image(tests_dir / f"{stem}.png", models)
-            except ValueError as e:  # a screenshot the geometry cannot be fitted to yet: skip it this round
+        paths = [tests_dir / f"{stem}.png" for stem in stems]
+        with ProcessPoolExecutor(WORKERS) as pool:
+            results = list(pool.map(_verify_or_none, paths, [models] * len(paths)))
+        for stem, v in zip(stems, results):
+            if v is None:  # a screenshot the geometry cannot be fitted to yet: skip it this round
                 if verbose:
-                    print(f"  skipped {stem}: {e}")
+                    print(f"  skipped {stem}")
                 continue
             for key in acc:
                 acc[key].features += getattr(v, key).features

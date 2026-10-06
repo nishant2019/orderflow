@@ -195,14 +195,30 @@ def _calibrate(img: np.ndarray, font: AxisFont, tpl: GlyphTemplates) -> PriceAxi
         raise ValueError(f"only {len(pts)} price labels read; cannot calibrate")
     # Other label columns (e.g. the lower pane's "0.000") also look like prices; the true
     # axis labels are evenly spaced, so drop the worst outlier until the fit is tight.
-    while True:
-        ys = np.array([p[0] for p in pts])
-        ps = np.array([p[1] for p in pts])
+    def fit(points):
+        ys = np.array([p[0] for p in points])
+        ps = np.array([p[1] for p in points])
         slope, intercept = np.polyfit(ys, ps, 1)
-        resid = np.abs(ys - (ps - intercept) / slope)
-        if resid.max() <= MAX_FIT_RESIDUAL_PX or len(pts) <= 3:
-            break
-        pts.pop(int(resid.argmax()))
+        return slope, intercept, np.abs(ys - (ps - intercept) / slope)
+
+    # Misread labels and the lower pane's own labels are outliers: keep the largest set of labels that
+    # lie on one line (every pair proposes a line; ties go to the tighter fit), then refit on that set.
+    best: tuple[int, float, list] | None = None
+    for i in range(len(pts)):
+        for j in range(i + 1, len(pts)):
+            if pts[i][0] == pts[j][0] or pts[i][1] == pts[j][1]:
+                continue
+            sl = (pts[j][1] - pts[i][1]) / (pts[j][0] - pts[i][0])
+            ic = pts[i][1] - sl * pts[i][0]
+            inl = [p for p in pts if abs(p[0] - (p[1] - ic) / sl) <= 1.0]
+            if len(inl) >= 3:
+                spread = fit(inl)[2].max()
+                if best is None or (len(inl), -spread) > (best[0], -best[1]):
+                    best = (len(inl), spread, inl)
+    if best is None:
+        raise ValueError("price labels are not evenly spaced")
+    pts = best[2]
+    slope, intercept, resid = fit(pts)
     if resid.max() > MAX_FIT_RESIDUAL_PX:
         raise ValueError("price labels are not evenly spaced")
     return PriceAxis(float(slope), float(intercept), float(resid.max()), tuple(pts))

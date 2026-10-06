@@ -18,8 +18,8 @@ for rel, labels in truth.items():
         if text is None:
             continue
         patches = band_patches(img, band, font=FONT_SMALL)
-        assert len(patches) == len(text), (rel, text, len(patches))
-        for ch, p in zip(text, patches):
+        assert len(patches) >= len(text), (rel, text, len(patches))
+        for ch, p in zip(text[::-1], patches[::-1]):  # aligned from the right (a leading blank cell may exist)
             acc.setdefault(ch, []).append(normalize(p))
 chars = sorted(acc)
 patches = [np.mean(acc[c], axis=0) for c in chars]

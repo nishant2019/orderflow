@@ -23,6 +23,8 @@ def cell_clf():
 
 
 def image_path(key):
+    if "/" in key:  # an uploaded shot, relative to the repository root: "shots/NAME_06-10-26"
+        return DATA.parents[1] / f"{key}.png"
     return DATA / (f"shot{key}.png" if key.isdigit() else f"{key}.png")
 
 

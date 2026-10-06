@@ -140,18 +140,17 @@ def test_every_profile_row_agrees_with_the_cells(docs):
 
 
 def test_a_misread_is_corrected_only_when_the_checks_single_out_one_fix(docs):
-    # split3, 167.3: a bold blue '48K' was read as '43K' (a 3/8 confusion). The profile row total,
-    # the column total and the imbalance rule together admit exactly one alternative reading.
+    # split3, 167.3: a bold blue '48K' used to be read as '43K' (a 3/8 confusion); with the retrained
+    # classifier it reads right, and the final value must be right either way
     d = docs["split3"]
-    assert d["summary"]["corrected_cells"] == 1
-    cell = next(c for b in d["bars"] for c in b["cells"] if c.get("corrected_from"))
-    assert (cell["price"], cell["corrected_from"], cell["ask_text"], cell["ask"]) == (167.3, "3KX43K", "48K", 48000.0)
-    assert all(docs[s]["summary"]["corrected_cells"] == 0 for s in STEMS if s not in ("split3", "split12"))
+    cell = next(c for b in d["bars"] for c in b["cells"] if c.get("price") == 167.3 and c.get("ask_text") == "48K")
+    assert cell["ask"] == 48000.0
     # split12, 1645: a '48' read as '43', found from the column total alone (the profile row is too coarse)
     d12 = docs["split12"]
     assert d12["summary"]["corrected_cells"] == 1
     cell = next(c for b in d12["bars"] for c in b["cells"] if c.get("corrected_from"))
     assert (cell["price"], cell["bid_text"], cell["bid"]) == (1645.0, "48", 48.0)
+    assert all(docs[s]["summary"]["corrected_cells"] == 0 for s in STEMS if s != "split12")
 
 
 # --- hand-read ground truth ------------------------------------------------------------------
@@ -330,8 +329,8 @@ def test_cum_delta_pane_candles_chain_through_the_table(docs):
         for i, b in enumerate(bars):
             c = b["cum_delta_candle"]
             cum = b["cum_delta"]["value"] if b.get("cum_delta") else None
-            if c is None or cum is None:
-                continue
+            if c is None or cum is None or b.get("clipped"):
+                continue  # a clipped bar's table text is not trusted
             tol = 3 * d["cum_delta_pane"]["units_per_px"]
             assert abs(c["close"] - cum) <= tol, (stem, i)
             assert c["low"] <= min(c["open"], c["close"]) + 1 and c["high"] >= max(c["open"], c["close"]) - 1
