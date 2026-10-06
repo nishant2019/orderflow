@@ -319,3 +319,20 @@ def test_imbalance_off_charts_use_computed_flags(docs):
     for stem in ("split11", "split12", "split13"):
         assert docs[stem]["imbalance"] == {"shown": False, "source": "computed", "ratio": 3.0}
     assert docs["split1"]["imbalance"]["source"] == "drawn"
+
+
+def test_cum_delta_pane_candles_chain_through_the_table(docs):
+    """Pane candles: open = previous bar's cumulative delta, close = this bar's, within the pixel fit."""
+    for stem in STEMS:
+        d = docs[stem]
+        assert d["cum_delta_pane"]["invalid_bars"] == [], stem
+        bars = d["bars"]
+        for i, b in enumerate(bars):
+            c = b["cum_delta_candle"]
+            cum = b["cum_delta"]["value"] if b.get("cum_delta") else None
+            if c is None or cum is None:
+                continue
+            tol = 3 * d["cum_delta_pane"]["units_per_px"]
+            assert abs(c["close"] - cum) <= tol, (stem, i)
+            assert c["low"] <= min(c["open"], c["close"]) + 1 and c["high"] >= max(c["open"], c["close"]) - 1
+            assert (c["direction"] == "up") == (c["close"] >= c["open"]), (stem, i)

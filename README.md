@@ -95,14 +95,18 @@ With all images in training, every readable bar, row and candle validates.
 
 * GoCharting only, these two layouts. A new font size, theme or settings combination needs new examples;
   a number format never seen in training (e.g. `M` before it was added) will be misread — the checks flag it.
-* Overlays not handled: the amber **"VPOC <day>" line** (seen once, as an image I could not open as a file).
 * A clipped first bar (cut by the image edge) is not read; its cells are solved from the profile rows when only that
   column is unknown on a row.
 * The colour-coded value area is not always contiguous (the platform seems to colour at a finer resolution).
 * Gap rows (no trades) are not drawn; the platform's imbalance rule next to a gap is not visible, so those pairs
   are not checked.
 * Candle prices are measured in pixels (±1 px); a wick hidden under the POC rectangle is estimated to its far edge.
-* Not yet extracted: the cumulative-delta candle pane.
+* The cumulative-delta pane is read for the split layout (`bars[].cum_delta_candle`, `cum_delta_pane`): its scale is
+  fitted through the amber zero line and the table's `Cum` row, and every candle's body ends must land on the
+  table's open/close (within 2.5 px) or the bar is listed in `cum_delta_pane.invalid_bars`. Wicks (intrabar
+  extremes of cumulative delta) are measured in pixels (about +-1 px, i.e. a few hundred to a few thousand units).
+* The amber dashed line in every screenshot is this pane's **zero line**. A separate amber **"VPOC <day>" line** (seen once,
+  in an image I could not open as a file) is still not handled: it needs a screenshot that shows it.
 * Charts with the imbalance display **off** (split11-13) get *computed* flags (`imbalance.source = "computed"`);
   they follow the 300 % ratio rule, but cannot be cross-checked against drawn orange boxes.
 * `platform_divergence` reports the platform's own pale red / green vertical markers per bar; it is `null` on charts

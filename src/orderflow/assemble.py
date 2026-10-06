@@ -7,6 +7,7 @@ import statistics
 import cv2
 from pathlib import Path
 
+from .cumpane import read_cum_pane
 from .divergence import find_divergence_bands
 from .candles import Candle, bucket, find_candles
 from .cells import CellText
@@ -217,7 +218,7 @@ def _profile2_json(rows: list, checks: list[ProfileCheck]) -> tuple[list[dict], 
 
 
 def _build(path, geo: ShotGeometry, layout: str, table, reports, labels, profile, profile_kind, profile_summary,
-           candles, line, inferred, corrected=0, current=None, imbalance=None) -> dict:
+           candles, line, inferred, corrected=0, current=None, imbalance=None, cum_pane=None) -> dict:
     times = infer_times(labels)
     poc = geo.find_poc_rows()
     traded = [
@@ -236,6 +237,12 @@ def _build(path, geo: ShotGeometry, layout: str, table, reports, labels, profile
         for i in range(geo.table.n_cols)
     ]
     for b in bars:
+        c = cum_pane.candles[b["index"]] if cum_pane else None
+        if cum_pane is not None:
+            b["cum_delta_candle"] = None if c is None else {
+                "direction": c.direction, "open": round(c.open), "high": round(c.high), "low": round(c.low),
+                "close": round(c.close), "residual_px": c.residual_px, "valid": c.valid,
+            }
         b["platform_divergence"] = bands.get(b["index"])  # "red" | "green" | None: the chart's own marker
     doc = {
         "schema_version": SCHEMA_VERSION,
@@ -261,6 +268,10 @@ def _build(path, geo: ShotGeometry, layout: str, table, reports, labels, profile
             "approximate": "cell volumes are as displayed (3.5K = 3500 +-50); table and profile values likewise",
         },
     }
+    if cum_pane is not None:
+        doc["cum_delta_pane"] = {"zero_y": round(cum_pane.zero_y, 1), "units_per_px": round(cum_pane.units_per_px, 1),
+                                 "fit_points": cum_pane.fit_points,
+                                 "invalid_bars": [i for i, c in enumerate(cum_pane.candles) if c is not None and not c.valid]}
     if profile_summary is not None:
         doc["profile_summary"] = profile_summary
     return doc
@@ -320,10 +331,11 @@ def _parse_split(path, models: SplitClassifiers) -> dict:
     labels = read_labels(geo.img, geo.table, models.labels)
     line = find_current_price_line(geo.raw, geo.axis, y_limit=geo.table.y_top)
     current = find_dashed_price_line(geo.raw, geo.axis, y_limit=geo.table.y_top)
+    cum_pane = read_cum_pane(geo.raw, geo.table, [t.cum.value for t in table], int(max(y for y, _ in geo.axis.labels)) + 12)
     return _build(path, geo, "split", table, reports, labels, profile, "delta_volume", summary,
                   find_candles(geo), line, len(inferred), len(fixes), current,
                   {"shown": geo.imbalance_shown, "source": "drawn" if geo.imbalance_shown else "computed",
-                   "ratio": geo.imbalance_ratio})
+                   "ratio": geo.imbalance_ratio}, cum_pane)
 
 
 def to_json(path: str | Path, pretty: bool = True, layout: str = "auto") -> str:
