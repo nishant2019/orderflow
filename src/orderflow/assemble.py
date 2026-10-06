@@ -216,7 +216,7 @@ def _profile2_json(rows: list, checks: list[ProfileCheck]) -> tuple[list[dict], 
 
 
 def _build(path, geo: ShotGeometry, layout: str, table, reports, labels, profile, profile_kind, profile_summary,
-           candles, line, inferred, corrected=0, current=None) -> dict:
+           candles, line, inferred, corrected=0, current=None, imbalance=None) -> dict:
     times = infer_times(labels)
     poc = geo.find_poc_rows()
     traded = [
@@ -240,6 +240,7 @@ def _build(path, geo: ShotGeometry, layout: str, table, reports, labels, profile
         "image": {"height": int(geo.img.shape[0]), "width": int(geo.img.shape[1])},
         "price": _price_json(geo, line, candles, current),
         "bars": bars,
+        "imbalance": imbalance,
         "profile_kind": profile_kind,
         "profile": profile,
         "summary": {
@@ -287,7 +288,8 @@ def _parse_single(path, models: Classifiers) -> dict:
     profile_rows = read_profile(geo, models.profile)
     profile = _profile_json(profile_rows, validate_profile(profile_rows, reports))
     line = find_current_price_line(geo.img, geo.axis, y_limit=geo.table.y_top)
-    return _build(path, geo, "single", table, reports, labels, profile, "delta", None, find_candles(geo), line, 0)
+    return _build(path, geo, "single", table, reports, labels, profile, "delta", None, find_candles(geo), line, 0,
+                  imbalance={"shown": True, "source": "drawn", "ratio": None})
 
 
 def _parse_split(path, models: SplitClassifiers) -> dict:
@@ -310,7 +312,9 @@ def _parse_split(path, models: SplitClassifiers) -> dict:
     line = find_current_price_line(geo.raw, geo.axis, y_limit=geo.table.y_top)
     current = find_dashed_price_line(geo.raw, geo.axis, y_limit=geo.table.y_top)
     return _build(path, geo, "split", table, reports, labels, profile, "delta_volume", summary,
-                  find_candles(geo), line, len(inferred), len(fixes), current)
+                  find_candles(geo), line, len(inferred), len(fixes), current,
+                  {"shown": geo.imbalance_shown, "source": "drawn" if geo.imbalance_shown else "computed",
+                   "ratio": geo.imbalance_ratio})
 
 
 def to_json(path: str | Path, pretty: bool = True, layout: str = "auto") -> str:

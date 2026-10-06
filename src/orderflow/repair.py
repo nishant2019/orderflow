@@ -158,7 +158,7 @@ def correct_misreads(geo, clf, reports: list, table: list[TableColumn], profile:
                             continue
                         tmp = ColumnReport(rep.col, next(t for t in trial if t.col == rep.col).cells)
                         _check_sums(tmp, table[rep.col])
-                        ratio = getattr(geo, "imbalance_ratio", None)
+                        ratio = getattr(geo, "imbalance_ratio", None) if getattr(geo, "imbalance_shown", True) else None
                         if ratio:
                             _check_imbalance(tmp, ratio)
                         if any(c.status == "fail" for c in tmp.checks):

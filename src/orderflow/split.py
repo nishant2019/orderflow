@@ -128,6 +128,7 @@ from .pipeline import ShotGeometry  # noqa: E402
 
 ORANGE_FILL_MIN = 0.25  # share of a box that must be orange to count as an imbalance box
 ROW_INSET = 2  # px trimmed from the top and bottom of a box when reading text
+MIN_ORANGE_PIXELS = 300  # fewer orange fill pixels in the footprint area: the chart has imbalances switched off
 POC_LINE_FRACTION = 0.7  # of the pair's width, for a black row to count as an edge of the POC rectangle
 MIN_FILLED = 0.5  # share of a box that must be non-white for the row to exist at all
 
@@ -139,6 +140,7 @@ class SplitShotGeometry(ShotGeometry):
     text_img: np.ndarray = None  # type: ignore[assignment]  # `img` with candle strokes whitened, for text reading
     advance: float = 0.0  # px between consecutive glyphs of the (monospace) cell font
     imbalance_ratio: float = 3.0  # the chart's imbalance setting (Ratio, 300 %); see docs/CHART_SETTINGS.md
+    imbalance_shown: bool = True  # False when the chart was taken with "Show Imbalances" off (no orange anywhere)
     overrides: dict = field(default_factory=dict)  # (col, row) -> CellText, e.g. inferred cells
     candle_window: tuple = (1, 8)  # px left/right of a column's left edge searched for its candle (measured per image)
 
@@ -239,6 +241,8 @@ class SplitShotGeometry(ShotGeometry):
                     # trusted, so the cell counts as unreadable (and may be solved from the totals)
                     cell = CellText("clipped", None, None, False, False, False, 0.0)
                 out.append((row, cell))
+        if not self.imbalance_shown:
+            out = derive_imbalance_flags(out, self.imbalance_ratio)
         return out
 
     def read_cell(self, col: int, row: int, clf: GlyphClassifier) -> CellText | None:
@@ -335,7 +339,35 @@ def load_split_shot(path: str) -> SplitShotGeometry:
     geo = SplitShotGeometry(clean, axis, table, grid, k_first, k_last, glyph_h, box, raw=img, text_img=text_img,
                             candle_window=(CANDLE_PAD - zone[0], zone[1] + CANDLE_PAD))
     geo.advance = _estimate_advance(geo)
+    geo.imbalance_shown = _count_orange(text_img, table, y_lo, y_hi) >= MIN_ORANGE_PIXELS
     return geo
+
+
+def derive_imbalance_flags(cells: list[tuple[int, CellText]], ratio: float) -> list[tuple[int, CellText]]:
+    """Imbalance flags from the chart's rule, for charts that do not draw them.
+
+    The rule (verified on every drawn flag of the charts that do draw them): sell imbalance when
+    bid[r] >= ratio * ask[row above]; buy imbalance when ask[r] >= ratio * bid[row below]; only
+    between rows that are both drawn. Computed from the displayed (rounded) numbers.
+    """
+    from dataclasses import replace
+
+    by_row = {r: c for r, c in cells if c.bid is not None and c.ask is not None}
+    out = []
+    for r, c in cells:
+        if r not in by_row or c.inferred:
+            out.append((r, c))
+            continue
+        up, down = by_row.get(r - 1), by_row.get(r + 1)
+        sell = bool(up and c.bid > 0 and c.bid >= ratio * up.ask)
+        buy = bool(down and c.ask > 0 and c.ask >= ratio * down.bid)
+        out.append((r, replace(c, sell_imbalance=sell, buy_imbalance=buy)))
+    return out
+
+
+def _count_orange(img: np.ndarray, table: TableGeometry, y0: int, y1: int) -> int:
+    hsv = cv2.cvtColor(img[y0:y1, table.x_left : table.x_right + 1], cv2.COLOR_BGR2HSV)
+    return int(_is_orange(hsv).sum())
 
 
 def _estimate_advance(geo: SplitShotGeometry) -> float:

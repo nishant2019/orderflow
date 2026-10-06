@@ -58,7 +58,7 @@ def validate_columns(
             continue
         _check_sums(rep, tcol)
         _check_poc(rep, poc.get(col))
-        ratio = getattr(geo, "imbalance_ratio", None)
+        ratio = getattr(geo, "imbalance_ratio", None) if getattr(geo, "imbalance_shown", True) else None
         if ratio:
             _check_imbalance(rep, ratio)
     _check_cum_chain(reports, table)
