@@ -68,7 +68,7 @@ def remove_price_line(img: np.ndarray, axis: PriceAxis, table) -> np.ndarray:
     return out
 
 
-DASH_BGR = np.array([82, 91, 237])  # the dashed line's dark first pixel row (its fainter second row is shared with the solid pink line)
+DASH_COLOURS = np.array([[82, 91, 237], [61, 66, 236], [145, 172, 55]])  # red, red (darker), teal  # the dashed line's dark first pixel row (its fainter second row is shared with the solid pink line)
 DASH_TOL = 30
 MIN_DASH_FRACTION = 0.35  # dashes cover roughly 60-70 % of the plot width
 
@@ -76,7 +76,7 @@ MIN_DASH_FRACTION = 0.35  # dashes cover roughly 60-70 % of the plot width
 def _dashed_rows(img: np.ndarray) -> np.ndarray:
     h, w = img.shape[:2]
     plot = img[:, LEFT_FRAME : w - RIGHT_STRIP].astype(np.int32)
-    hit = np.abs(plot - DASH_BGR).sum(axis=2) < DASH_TOL
+    hit = (np.abs(plot[:, :, None, :] - DASH_COLOURS).sum(axis=3) < DASH_TOL).any(axis=2)
     rows = np.where(hit.sum(axis=1) > MIN_DASH_FRACTION * plot.shape[1])[0]
     return np.concatenate([rows, rows + 1]) if len(rows) else rows  # + the faint second row below it
 

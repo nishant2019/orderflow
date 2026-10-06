@@ -214,14 +214,14 @@ class SplitShotGeometry(ShotGeometry):
                 return None
             runs, cur = [], [ys[0]]
             for y in ys[1:]:
-                if y - cur[-1] <= 1:
+                if y - cur[-1] <= 1 + 0.2 * self.grid.pitch:  # a label drawn over the bar leaves a short gap
                     cur.append(y)
                 else:
                     runs.append(cur)
                     cur = [y]
             runs.append(cur)
-            run = max(runs, key=len)
-            if len(run) < 0.8 * self.grid.pitch:
+            run = max(runs, key=lambda r: r[-1] - r[0])
+            if run[-1] - run[0] + 1 < 0.8 * self.grid.pitch:
                 return None
             centres.append((run[0] + run[-1]) / 2)
         if abs(centres[0] - centres[1]) > 3:
@@ -247,11 +247,12 @@ class SplitShotGeometry(ShotGeometry):
 
     def read_cell(self, col: int, row: int, clf: GlyphClassifier) -> CellText | None:
         halves = {}
+        stats = {side: self.half_stats(col, row, side) for side in ("bid", "ask")}
+        if all(stats[side][0] < MIN_FILLED for side in stats):
+            return None  # no boxes on this row for this bar
         for side in ("bid", "ask"):
-            filled, orange = self.half_stats(col, row, side)
-            if filled < MIN_FILLED:
-                halves[side] = None
-                continue
+            filled, orange = stats[side]
+            # a box can be (nearly) white, e.g. a zero volume: it still holds text when its sibling is drawn
             glyphs = self.half_glyphs(col, row, side)
             chars, dists = [], []
             for g in glyphs:

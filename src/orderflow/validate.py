@@ -262,8 +262,11 @@ def validate_candles(candles: list, traded_prices: list[list[float]], step: floa
             checks.append(Check("continuity", "skip", "first bar or new session"))
         if traded_prices[i]:
             top, bottom = max(traded_prices[i]), min(traded_prices[i])
-            high_ok = candle.high_clipped or bucket(candle.high, step, price_per_px) >= top - 1e-6
-            low_ok = candle.low_clipped or bucket(candle.low, step, price_per_px) <= bottom + 1e-6
+            # an end hidden under the POC rectangle is an estimate: allow a few pixels of slack there
+            hi_j = -3 * price_per_px if candle.high_hidden else price_per_px  # hidden end: could lie higher
+            lo_j = price_per_px * (4 if candle.low_hidden else 1)
+            high_ok = candle.high_clipped or bucket(candle.high, step, hi_j) >= top - 1e-6
+            low_ok = candle.low_clipped or bucket(candle.low, step, lo_j) <= bottom + 1e-6
             checks.append(Check("range", "ok" if high_ok and low_ok else "fail",
                                 f"candle {candle.low:.2f}-{candle.high:.2f} vs traded rows {bottom:g}-{top:g}"))
     return out

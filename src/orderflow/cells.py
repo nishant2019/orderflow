@@ -343,6 +343,12 @@ class GlyphClassifier:
                 alts.append(lab)
         return alts
 
+    def label_distance(self, feat: np.ndarray, label: str) -> float:
+        """Squared distance from the glyph to the nearest training sample labelled `label`."""
+        d = ((self.features - feat[None]) ** 2).sum(axis=1)
+        sel = d[self.labels == label]
+        return float(sel.min()) if len(sel) else float("inf")
+
     def classify(self, feat: np.ndarray) -> tuple[str, float]:
         d = ((self.features - feat[None]) ** 2).sum(axis=1)
         idx = np.argsort(d)[: self.k]

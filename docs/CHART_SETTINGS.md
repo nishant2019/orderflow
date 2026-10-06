@@ -26,3 +26,15 @@ Same layout and the same imbalance / POC settings (Ratio 300 %, black Volume POC
 | A **red dashed horizontal line** with a price tag on the right axis | it is the *current price* (`price.current`); it is patched out of the image before the text is read, because it runs through the digits |
 | The solid pink line labelled with a price (here `1395`) is still the **profile POC** | `price.poc_line` |
 | The first bar is cut off by the left image edge | its cells are not read; they are solved from the profile row totals where possible |
+
+## Variant C (`split11.png`, `split12.png`, `split13.png`): imbalance display **off**, divergence markers on
+
+Same boxes, fonts and black POC rectangle as variant B (centred candles), but:
+
+| Difference | Handling |
+|---|---|
+| **No orange imbalance backgrounds** (zero orange pixels) | detected by counting orange pixels (`imbalance.shown`); the flags are then **computed** from the rule (ratio 3, diagonal) and the JSON says `imbalance.source = "computed"`. The imbalance validation is skipped, since there is nothing drawn to check against |
+| **Pale vertical bands** through some bars' candles (pink = red, green) | the platform's own **delta-divergence markers**, reported per bar as `platform_divergence` (`"red"` = up candle with negative delta, `"green"` = down candle with positive delta, verified on all 9 marked bars) |
+| Current-price dashed line in **darker red** or **teal** (tag on the right axis) | both colours are recognised (`price.current`) and patched out before reading |
+| A second pane below the price rows (cumulative-delta candles, amber dashed line) | not extracted; the candle search stops at the last price row so these candles are not taken for the bar's candle |
+| Near-white boxes for zero volume next to a drawn box | the row exists when either box is tinted; the white box is still read |

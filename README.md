@@ -103,6 +103,10 @@ cells, mostly its cut-off first bar). With all images in training every readable
   are not checked.
 * Candle prices are measured in pixels (±1 px); a wick hidden under the POC rectangle is estimated to its far edge.
 * Not yet extracted: the cumulative-delta candle pane.
+* Charts with the imbalance display **off** (split11-13) get *computed* flags (`imbalance.source = "computed"`);
+  they follow the 300 % ratio rule, but cannot be cross-checked against drawn orange boxes.
+* `platform_divergence` reports the platform's own pale red / green vertical markers per bar; it is `null` on charts
+  that do not show them.
 
 ## Training data
 
@@ -114,7 +118,7 @@ Glyph classifiers live in `src/orderflow/data/*.npz`.
 | `cell_truth.json` | `build_cell_glyphs.py` | single-layout cell text |
 | `table_truth.json`, `profile_truth.json` | `build_table_glyphs.py`, `build_profile_glyphs.py` | table, single-layout profile |
 | `time_truth.json` (+ axis labels) | `build_label_glyphs.py` | time labels |
-| `split1..9.png` (+ `profile2_truth.json`, split rows of `table_truth.json` for `M`) | **`train_split.py`** | split cells / table / profile |
+| `split1..13.png` (+ `profile2_truth.json`, split rows of `table_truth.json` for `M`) | **`train_split.py`** | split cells / table / profile |
 
 The split classifiers are **self-trained**: a glyph becomes a label only if its cell, column and profile row
 agree with the chart's checksums (`orderflow.selftrain`), so thousands of glyphs are labelled without hand

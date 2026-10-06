@@ -53,7 +53,10 @@ def _plot_window(geo: ShotGeometry) -> tuple[int, int]:
     ys = [y for y, _ in geo.axis.labels]
     spacing = float(np.median(np.diff(sorted(ys)))) if len(ys) > 1 else geo.grid.pitch
     top = max(46, int(min(ys) - spacing))
-    return top, int(max(ys) + spacing * 0.6)
+    bottom = int(max(ys) + spacing * 0.6)
+    if hasattr(geo, "box"):  # split layout: a pane below the price rows (cumulative delta) is not price
+        bottom = min(bottom, int(geo.grid.row_top(geo.k_last + 1)) + 2)
+    return top, bottom
 
 
 def _hidden_extension(black: np.ndarray, end: int, col: int, step: int) -> int:

@@ -16,7 +16,7 @@ from .overlays import find_current_price_line, find_dashed_price_line
 from .pipeline import ShotGeometry, load_shot
 from .profile import read_profile
 from .profile2 import read_profile2
-from .repair import correct_misreads, correct_profile_misreads, infer_unreadable
+from .repair import correct_column_misreads, correct_misreads, correct_profile_misreads, infer_unreadable, suspect_cells
 from .split import load_split_shot
 from .calibrate import calibrate_table
 from .table import TableColumn, read_table
@@ -227,7 +227,7 @@ def _build(path, geo: ShotGeometry, layout: str, table, reports, labels, profile
     candle_checks = validate_candles(
         candles, traded, geo.grid.price_step, abs(geo.axis.slope), [lab.date is not None for lab in labels]
     )
-    bands = find_divergence_bands(geo.raw, geo.table.col_edges, geo.table.y_top)
+    bands = find_divergence_bands(getattr(geo, "raw", geo.img), geo.table.col_edges, geo.table.y_top)
     bars = [
         _bar_json(
             geo, i, table[i], reports[i], labels[i], times[i], poc.get(i),
@@ -307,9 +307,14 @@ def _parse_split(path, models: SplitClassifiers) -> dict:
         geo.overrides.update({(f.col, f.row): f.cell for f in fixes})
         reports = validate_columns(geo, table, models.cells)
     profile_rows = correct_profile_misreads(geo, models.profile, reports, profile_rows)
-    inferred = infer_unreadable(geo, reports, table, profile_rows)
+    inferred = infer_unreadable(geo, reports, table, profile_rows, suspect_cells(reports, profile_rows))
     if inferred:  # cover-ups (e.g. the price-line label) are solved from the profile row / table
         geo.overrides.update({(i.col, i.row): i.cell for i in inferred})
+        reports = validate_columns(geo, table, models.cells)
+    more = correct_column_misreads(geo, models.cells, reports, table, profile_rows)
+    if more:
+        fixes += more
+        geo.overrides.update({(f.col, f.row): f.cell for f in more})
         reports = validate_columns(geo, table, models.cells)
     profile, summary = _profile2_json(profile_rows, validate_profile2(profile_rows, reports))
     labels = read_labels(geo.img, geo.table, models.labels)

@@ -33,11 +33,29 @@ def _solve(volume: float, delta: float, tol: float) -> tuple[float, float] | Non
     return max(bid, 0.0), max(ask, 0.0)
 
 
-def infer_unreadable(geo, reports: list, table: list[TableColumn], profile: list) -> list[Inference]:
+def suspect_cells(reports: list, profile: list) -> set[tuple[int, int]]:
+    """Cells that parsed but are probably covered or garbled: the one cell where a failing column
+    total and a failing profile row meet (so nothing else can explain both)."""
+    from .validate import validate_profile2
+
+    bad_rows = {p.row for p in validate_profile2(profile, reports)
+                if any(c.name in ("volume", "delta") and c.status == "fail" for c in p.checks)}
+    out: set[tuple[int, int]] = set()
+    for rep in reports:
+        if not any(c.name in ("volume", "delta") and c.status == "fail" for c in rep.checks):
+            continue
+        hits = [(rep.col, r) for r, c in rep.cells if r in bad_rows and c.bid is not None and not c.inferred]
+        if len(hits) == 1:
+            out.add(hits[0])
+    return out
+
+
+def infer_unreadable(geo, reports: list, table: list[TableColumn], profile: list, suspects=frozenset()) -> list[Inference]:
     """Inferences for every unreadable cell whose row (or column) has no other unknown."""
     from .validate import table_tolerance
 
     unreadable = {(rep.col, row) for rep in reports for row, c in rep.cells if c.bid is None or c.ask is None}
+    unreadable |= set(suspects)
     if not unreadable:
         return []
     by_row = {p.row: p for p in profile if p.delta is not None and p.volume is not None}
@@ -76,6 +94,7 @@ def infer_unreadable(geo, reports: list, table: list[TableColumn], profile: list
     return out
 
 
+RIVAL_COST_RATIO = 1.5  # a rival reading must be this much farther from the glyph than the winner
 MIN_FIX_MARGIN = 0.5  # a correction must beat the runner-up by this much (errors are in units of the allowed tolerance)
 
 
@@ -102,7 +121,7 @@ def _with_cell(reports: list, col: int, row: int, cell: CellText) -> list:
     return out
 
 
-def _alternative_texts(geo, col: int, row: int, side: str, clf) -> list[str]:
+def _alternative_texts(geo, col: int, row: int, side: str, clf, with_cost: bool = False) -> list:
     """Readings of one box that differ from the best guess by a single glyph."""
     from .cells import glyph_features
 
@@ -115,7 +134,8 @@ def _alternative_texts(geo, col: int, row: int, side: str, clf) -> list[str]:
             continue
         for alt in clf.alternatives(f):
             if alt.isdigit():
-                out.append("".join(best[:i]) + alt + "".join(best[i + 1 :]))
+                text = "".join(best[:i]) + alt + "".join(best[i + 1 :])
+                out.append((text, clf.label_distance(f, alt)) if with_cost else text)
     return out
 
 
@@ -142,7 +162,7 @@ def correct_misreads(geo, clf, reports: list, table: list[TableColumn], profile:
                 for side in ("bid", "ask"):
                     for alt_text in _alternative_texts(geo, rep.col, row, side, clf):
                         value = parse_number(alt_text)
-                        if value is None:
+                        if value is None or alt_text.startswith("0K"):  # "0K" is never displayed
                             continue
                         bid = value if side == "bid" else cell.bid
                         ask = value if side == "ask" else cell.ask
@@ -166,6 +186,60 @@ def correct_misreads(geo, clf, reports: list, table: list[TableColumn], profile:
                         found.append(Correction(rep.col, row, cell.raw, new_raw, new))
         if len(found) == 1:
             fixes.append(found[0])
+    return fixes
+
+
+def correct_column_misreads(geo, clf, reports: list, table: list[TableColumn], profile: list) -> list[Correction]:
+    """Fix a single-glyph misread that only the bar's table totals reveal (the profile row is too coarse).
+
+    For a column whose volume/delta check fails, every cell is tried with each single-glyph
+    alternative; the change is accepted only if exactly one makes every column check, the imbalance
+    rule and the cell's profile row pass.
+    """
+    from .cells import display_tolerance, parse_number
+    from .validate import ColumnReport, _check_imbalance, _check_sums, table_tolerance, validate_profile2
+
+    fixes: list[Correction] = []
+    rows_ok = {p.row for p in validate_profile2(profile, reports) if p.ok}
+    for rep in reports:
+        if not any(c.name in ("volume", "delta") and c.status == "fail" for c in rep.checks):
+            continue
+        found: list[Correction] = []
+        for row, cell in rep.cells:
+            if cell.bid is None or cell.ask is None or cell.inferred or cell.ellipsis:
+                continue
+            for side in ("bid", "ask"):
+                for alt_text, cost in _alternative_texts(geo, rep.col, row, side, clf, with_cost=True):
+                    value = parse_number(alt_text)
+                    if value is None or alt_text.startswith("0K"):
+                        continue
+                    bid_t, ask_t = cell.raw.split("X")
+                    new_raw = f"{alt_text}X{ask_t}" if side == "bid" else f"{bid_t}X{alt_text}"
+                    new = CellText(new_raw, value if side == "bid" else cell.bid, value if side == "ask" else cell.ask,
+                                   cell.sell_imbalance, cell.buy_imbalance, False, 0.6,
+                                   display_tolerance(new_raw.split("X")[0]), display_tolerance(new_raw.split("X")[1]),
+                                   False, cell.raw)
+                    trial = _with_cell(reports, rep.col, row, new)
+                    tmp = ColumnReport(rep.col, next(t for t in trial if t.col == rep.col).cells)
+                    _check_sums(tmp, table[rep.col])
+                    ratio = getattr(geo, "imbalance_ratio", None) if getattr(geo, "imbalance_shown", True) else None
+                    if ratio:
+                        _check_imbalance(tmp, ratio)
+                    if any(c.status == "fail" for c in tmp.checks):
+                        continue
+                    if any(r not in {q.row for q in validate_profile2(profile, trial) if q.ok} for r in rows_ok):
+                        continue
+                    miss = 0.0  # how far the totals still are from the table, in units of the allowed tolerance
+                    for got, total in ((table[rep.col].volume, sum(c.bid + c.ask for _, c in tmp.cells if c.bid is not None)),
+                                       (table[rep.col].delta, sum(c.ask - c.bid for _, c in tmp.cells if c.bid is not None))):
+                        if got.value is not None:
+                            miss += abs(total - got.value) / max(table_tolerance(got.raw), 1.0)
+                    found.append((cost * (1.0 + miss), Correction(rep.col, row, cell.raw, new_raw, new)))
+        found.sort(key=lambda t: t[0])
+        # the totals alone are loose (displayed numbers are rounded): the glyph shape arbitrates, and must
+        # favour one reading clearly over every other that fits
+        if found and (len(found) == 1 or found[1][0] >= RIVAL_COST_RATIO * found[0][0]):
+            fixes.append(found[0][1])
     return fixes
 
 
