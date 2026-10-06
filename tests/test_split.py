@@ -330,8 +330,8 @@ def test_cum_delta_pane_candles_chain_through_the_table(docs):
         for i, b in enumerate(bars):
             c = b["cum_delta_candle"]
             cum = b["cum_delta"]["value"] if b.get("cum_delta") else None
-            if c is None or cum is None:
-                continue
+            if c is None or cum is None or b.get("clipped"):
+                continue  # a clipped bar's table text is not trusted
             tol = 3 * d["cum_delta_pane"]["units_per_px"]
             assert abs(c["close"] - cum) <= tol, (stem, i)
             assert c["low"] <= min(c["open"], c["close"]) + 1 and c["high"] >= max(c["open"], c["close"]) - 1

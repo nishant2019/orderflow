@@ -57,8 +57,57 @@ def table_glyph_height(img: np.ndarray, table: TableGeometry) -> int:
     return int(np.bincount(heights).argmax())
 
 
-def cell_glyphs(img: np.ndarray, table: TableGeometry, row: int, col: int, glyph_h: float) -> list[Glyph]:
+def estimate_advance(img: np.ndarray, table: TableGeometry, glyph_h: float) -> float:
+    """The monospace character advance, from the spacing of neighbouring digits in the Volume row
+    (dark text on a pale fill, which does not break apart): the left edges of tall glyphs that sit
+    next to each other are one advance apart (two when a period lies between them)."""
+    diffs: list[float] = []
+    for col in range(table.n_cols):
+        if table.first_clipped and col == 0:
+            continue
+        ink, _ = cell_ink(img, table, 0, col)
+        _, _, stats, _ = cv2.connectedComponentsWithStats(ink.astype(np.uint8), connectivity=8)
+        tall = sorted(int(x) for x, y, w, h, area in stats[1:] if h >= 0.8 * glyph_h and w >= 3)
+        diffs += [b - a for a, b in zip(tall, tall[1:])]
+    d = np.array([x for x in diffs if 0.5 * glyph_h <= x <= 2.6 * glyph_h], float)
+    if len(d) < 5:
+        return float(0.9 * glyph_h)
+    base = np.percentile(d, 20)
+    near = d[(d >= 0.85 * base) & (d <= 1.15 * base)]
+    return float(np.median(near))
+
+
+def _slot_glyphs(ink: np.ndarray, soft: np.ndarray, advance: float) -> list[Glyph]:
+    """Cut a cell's text into equal character slots (monospace font): immune to strokes that
+    break apart or touch, which defeats connected-component segmentation on thin white text."""
+    cols = np.where(ink.any(axis=0))[0]
+    if len(cols) == 0:
+        return []
+    a, b = int(cols.min()), int(cols.max()) + 1
+    n = max(int(round((b - a + 1.0) / advance)), 1)
+    start = (a + b) / 2 - n * advance / 2
+    rows = np.where(ink.any(axis=1))[0]
+    band_top = int(rows.min())
+    out = []
+    for i in range(n):
+        x0, x1 = int(round(start + i * advance)), int(round(start + (i + 1) * advance))
+        x0, x1 = max(x0, 0), min(x1, ink.shape[1])
+        sub = ink[:, x0:x1]
+        r = np.where(sub.any(axis=1))[0]
+        c = np.where(sub.any(axis=0))[0]
+        if len(r) == 0:
+            continue
+        y0, y1, xa, xb = int(r.min()), int(r.max()) + 1, int(c.min()), int(c.max()) + 1
+        mask = sub[y0:y1, xa:xb]
+        out.append(Glyph(x0 + xa, y0, xb - xa, y1 - y0, "black", mask, soft[y0:y1, x0 + xa : x0 + xb] * mask, float(y0 - band_top)))
+    return out
+
+
+def cell_glyphs(img: np.ndarray, table: TableGeometry, row: int, col: int, glyph_h: float,
+                advance: float | None = None) -> list[Glyph]:
     ink, soft = cell_ink(img, table, row, col)
+    if advance:
+        return _slot_glyphs(ink, soft, advance)
     zeros = np.zeros_like(ink)
     return segment_glyphs({"black": ink, "red": zeros, "blue": zeros}, table.pitch, glyph_h, soft)
 
@@ -80,11 +129,12 @@ class TableColumn:
 
 def read_table(img: np.ndarray, table: TableGeometry, clf: GlyphClassifier) -> list[TableColumn]:
     gh = table_glyph_height(img, table)
+    adv = estimate_advance(img, table, gh)
     columns = []
     for col in range(table.n_cols):
         cells = []
         for row in range(3):
-            glyphs = cell_glyphs(img, table, row, col, gh)
+            glyphs = cell_glyphs(img, table, row, col, gh, adv)
             chars, dists = [], []
             for g in glyphs:
                 ch, d = clf.classify(glyph_features(g, gh))

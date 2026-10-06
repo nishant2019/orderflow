@@ -331,7 +331,7 @@ def _parse_split(path, models: SplitClassifiers) -> dict:
     labels = read_labels(geo.img, geo.table, models.labels)
     line = find_current_price_line(geo.raw, geo.axis, y_limit=geo.table.y_top)
     current = find_dashed_price_line(geo.raw, geo.axis, y_limit=geo.table.y_top)
-    cum_pane = read_cum_pane(geo.raw, geo.table, [t.cum.value for t in table], int(max(y for y, _ in geo.axis.labels)) + 12)
+    cum_pane = read_cum_pane(geo.raw, geo.table, [None if t.clipped else t.cum.value for t in table], int(max(y for y, _ in geo.axis.labels)) + 12)
     return _build(path, geo, "split", table, reports, labels, profile, "delta_volume", summary,
                   find_candles(geo), line, len(inferred), len(fixes), current,
                   {"shown": geo.imbalance_shown, "source": "drawn" if geo.imbalance_shown else "computed",

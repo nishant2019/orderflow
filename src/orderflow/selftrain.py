@@ -19,7 +19,7 @@ from .cells import GlyphClassifier, glyph_features
 from .profile2 import read_profile2
 from .split import SplitShotGeometry, load_split_shot
 from .table import cell_glyphs as table_cell_glyphs
-from .table import read_table, table_glyph_height
+from .table import estimate_advance, read_table, table_glyph_height
 from .validate import ColumnReport, validate_columns, validate_profile2
 
 DATA = Path(__file__).parent / "data"
@@ -90,6 +90,7 @@ def verify_image(path: str | Path, models: Classifiers3) -> Verified:
             out.n_cells += 1
 
     gh = table_glyph_height(geo.img, geo.table)
+    adv = estimate_advance(geo.img, geo.table, gh)
     for col, rep in enumerate(reports):
         col_ok = rep.ok and not table[col].clipped and any(c.name in ("cum",) and c.status == "ok" for c in rep.checks)
         for r, name in enumerate(("volume", "delta", "cum")):
@@ -97,7 +98,7 @@ def verify_image(path: str | Path, models: Classifiers3) -> Verified:
             cell = getattr(table[col], name)
             if not col_ok or cell.value is None:
                 continue
-            glyphs = table_cell_glyphs(geo.img, geo.table, r, col, gh)
+            glyphs = table_cell_glyphs(geo.img, geo.table, r, col, gh, adv)
             if len(glyphs) == len(cell.raw):
                 out.table.add(glyphs, cell.raw, gh)
                 out.n_table += 1
