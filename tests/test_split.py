@@ -145,12 +145,12 @@ def test_a_misread_is_corrected_only_when_the_checks_single_out_one_fix(docs):
     d = docs["split3"]
     cell = next(c for b in d["bars"] for c in b["cells"] if c.get("price") == 167.3 and c.get("ask_text") == "48K")
     assert cell["ask"] == 48000.0
-    # split12, 1645: a '48' read as '43', found from the column total alone (the profile row is too coarse)
+    # split12, 1645: a '48' that used to read as '43' (found from the column total alone); the improved
+    # segmentation now reads it right, so the final value is what counts
     d12 = docs["split12"]
-    assert d12["summary"]["corrected_cells"] == 1
-    cell = next(c for b in d12["bars"] for c in b["cells"] if c.get("corrected_from"))
-    assert (cell["price"], cell["bid_text"], cell["bid"]) == (1645.0, "48", 48.0)
-    assert all(docs[s]["summary"]["corrected_cells"] == 0 for s in STEMS if s != "split12")
+    cell = next(c for b in d12["bars"] for c in b["cells"] if c.get("price") == 1645.0 and c.get("bid_text") == "48")
+    assert cell["bid"] == 48.0
+    assert all(docs[s]["summary"]["corrected_cells"] == 0 for s in STEMS)
 
 
 # --- hand-read ground truth ------------------------------------------------------------------

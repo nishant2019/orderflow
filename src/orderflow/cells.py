@@ -202,7 +202,7 @@ def _split_run_advance(proj: np.ndarray, x0: int, x1: int, advance: float) -> li
     """Split a run of touching glyphs using the font's measured advance (split layout).
 
     n glyphs occupy about n * advance - 1 px; a count that would leave a sliver narrower than
-    0.6 of a slot is rejected in favour of fewer glyphs.
+    0.5 of a slot (a '1' is narrow) is rejected in favour of fewer glyphs.
     """
     n = max(1, int(round((x1 - x0 + 1) / advance)))
     while n > 1:
@@ -210,9 +210,14 @@ def _split_run_advance(proj: np.ndarray, x0: int, x1: int, advance: float) -> li
         for k in range(1, n):
             mid = x0 + (x1 - x0) * k / n
             lo, hi = max(x0 + 1, int(mid - 1.5)), min(x1 - 1, int(mid + 1.5) + 1)
-            cuts.append(lo + int(np.argmin(proj[lo : hi + 1])) if hi >= lo else int(mid))
+            if hi >= lo:
+                seg = proj[lo : hi + 1]
+                ties = np.where(seg == seg.min())[0] + lo
+                cuts.append(int(ties[np.argmin(np.abs(ties - mid))]))  # the emptiest column nearest the middle
+            else:
+                cuts.append(int(mid))
         edges = [x0, *cuts, x1]
-        if min(b - a for a, b in zip(edges, edges[1:])) >= 0.6 * advance:
+        if min(b - a for a, b in zip(edges, edges[1:])) >= 0.5 * advance:
             return [(edges[i], edges[i + 1]) for i in range(n)]
         n -= 1
     return [(x0, x1)]
@@ -263,7 +268,12 @@ def _drop_strays(glyphs: list[Glyph], glyph_h: float) -> list[Glyph]:
     out = []
     for i, g in enumerate(glyphs):
         if g.w == 1 and g.h >= 3:
-            continue  # vertical sliver
+            # a 1 px wide vertical stroke: a candle-fringe sliver, or a '1' in small text (its stem has no
+            # foot). A '1' is as tall as the text and has a neighbour one character away on its right.
+            tall = g.h >= 0.85 * glyph_h
+            near = i + 1 < len(glyphs) and glyphs[i + 1].x0 - (g.x0 + g.w) <= 0.7 * glyph_h
+            if not (tall and near):
+                continue
         if is_dot[i]:
             left = i > 0 and g.x0 - (glyphs[i - 1].x0 + glyphs[i - 1].w) <= DOT_GAP * glyph_h
             right = i + 1 < len(glyphs) and glyphs[i + 1].x0 - (g.x0 + g.w) <= DOT_GAP * glyph_h
