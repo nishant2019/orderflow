@@ -22,8 +22,8 @@ for shot, rows in sorted(truth.items()):
     gh = table_glyph_height(img, table)
     adv = estimate_advance(img, table, gh)
     used = skipped = 0
-    for r, name in enumerate(ROW_NAMES):
-        for col, text in enumerate(rows[name]):
+    for r, name in enumerate(ROW_NAMES + ("delta_pct",)):
+        for col, text in enumerate(rows.get(name, [])):
             if text is None:
                 continue
             glyphs = cell_glyphs(img, table, r, col, gh, adv)

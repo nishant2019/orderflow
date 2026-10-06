@@ -139,6 +139,7 @@ def _bar_json(
         "volume": _table_value(tcol.volume),
         "delta": _table_value(tcol.delta),
         "cum_delta": _table_value(tcol.cum),
+        "delta_pct": None if tcol.delta_pct is None else _table_value(tcol.delta_pct),  # delta / volume in %
         "ohlc": ohlc,
         "poc_price": None if poc_row is None else geo.grid.row_price(poc_row, geo.axis),
         "traded_range": {"low": min(traded), "high": max(traded)} if traded else None,

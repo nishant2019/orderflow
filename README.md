@@ -91,6 +91,14 @@ The weak spots: the `M` suffix in the one image that has it (6 of the 9 failing 
 cut-off variants when never seen (split10 and split13: 15 of the 16 unparseable cells, mostly the cut-off first bar).
 With all images in training, every readable bar, row and candle validates.
 
+## The optional Delta % row (shots3)
+
+Some charts add a 4th table row, **Delta %** = delta / volume x 100 (e.g. 448.56K / 5.04M = 8.9 %). It is detected
+from the table height (`TableGeometry.n_rows`), read like the other rows, and given the delta's sign (the chart shows
+the sign only by the cell colour: red = negative). It appears as `bars[].delta_pct` (`null` when the chart has no such
+row) and is checked against the table's own volume and delta (`pct` check, within the rounding of the three numbers) -
+an independent test of two table numbers.
+
 ## Known limits
 
 * GoCharting only, these two layouts. A new font size, theme or settings combination needs new examples;

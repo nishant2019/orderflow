@@ -16,6 +16,7 @@ from .calibrate import TableGeometry
 from .cells import Glyph, GlyphClassifier, glyph_features, segment_glyphs
 
 ROW_NAMES = ("volume", "delta", "cum")
+_PCT = re.compile(r"^(\d+(?:\.\d+)?)%$")
 INK_DIST = 90  # L1 colour distance from the background that counts as ink
 X_INSET = 3  # px trimmed from each side of a cell (column separators)
 MIN_GLYPH_H = 8
@@ -125,6 +126,7 @@ class TableColumn:
     delta: TableCell
     cum: TableCell
     clipped: bool  # the column is cut by the image edge; its text is unreliable
+    delta_pct: TableCell | None = None  # the optional 4th row, delta / volume in percent (signed like the delta)
 
 
 def read_table(img: np.ndarray, table: TableGeometry, clf: GlyphClassifier) -> list[TableColumn]:
@@ -133,7 +135,8 @@ def read_table(img: np.ndarray, table: TableGeometry, clf: GlyphClassifier) -> l
     columns = []
     for col in range(table.n_cols):
         cells = []
-        for row in range(3):
+        pct = None
+        for row in range(table.n_rows):
             glyphs = cell_glyphs(img, table, row, col, gh, adv)
             chars, dists = [], []
             for g in glyphs:
@@ -141,10 +144,20 @@ def read_table(img: np.ndarray, table: TableGeometry, clf: GlyphClassifier) -> l
                 chars.append(ch)
                 dists.append(d)
             raw = "".join(chars)
-            value = parse_signed(raw)
+            if row == 3:  # "38.55%": the colour shows the sign, the text does not
+                m = _PCT.match(raw)
+                value = None if not m else float(m.group(1))
+            else:
+                value = parse_signed(raw)
             conf = 0.0 if value is None else float(np.mean([1 / (1 + max(0.0, d - 2.0)) for d in dists]))
-            cells.append(TableCell(raw, value, conf))
-        columns.append(TableColumn(*cells, clipped=table.first_clipped and col == 0))
+            cell = TableCell(raw, value, conf)
+            if row == 3:
+                pct = cell
+            else:
+                cells.append(cell)
+        if pct is not None and pct.value is not None and cells[1].value is not None and cells[1].value < 0:
+            pct = TableCell(pct.raw, -pct.value, pct.confidence)
+        columns.append(TableColumn(*cells, clipped=table.first_clipped and col == 0, delta_pct=pct))
     return columns
 
 

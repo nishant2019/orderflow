@@ -57,12 +57,30 @@ def validate_columns(
             rep.checks.append(Check("column", "skip", "no footprint cells visible (bar outside the price range?)"))
             continue
         _check_sums(rep, tcol)
+        _check_pct(rep, tcol)
         _check_poc(rep, poc.get(col))
         ratio = getattr(geo, "imbalance_ratio", None) if getattr(geo, "imbalance_shown", True) else None
         if ratio:
             _check_imbalance(rep, ratio)
     _check_cum_chain(reports, table)
     return reports
+
+
+def _check_pct(rep: ColumnReport, tcol: TableColumn) -> None:
+    """The optional Delta % row is delta / volume * 100 (an independent check of both table numbers)."""
+    pct = tcol.delta_pct
+    if pct is None:
+        return
+    if pct.value is None or tcol.volume.value is None or tcol.delta.value is None or tcol.volume.value <= 0:
+        rep.checks.append(Check("pct", "skip", "delta %, delta or volume unreadable"))
+        return
+    vol, dlt = tcol.volume.value, tcol.delta.value
+    want = 100.0 * dlt / vol
+    # the displayed volume and delta are rounded, and so is the percentage itself
+    tol = 100.0 * (table_tolerance(tcol.delta.raw) / vol + abs(dlt) * table_tolerance(tcol.volume.raw) / vol**2)
+    tol += display_tolerance(pct.raw.rstrip("%").lstrip("-")) + 0.02
+    ok = abs(want - pct.value) <= tol
+    rep.checks.append(Check("pct", "ok" if ok else "fail", f"delta/volume {want:.2f}% vs shown {pct.value:.2f}% (tol {tol:.2f})"))
 
 
 def _check_sums(rep: ColumnReport, tcol: TableColumn) -> None:

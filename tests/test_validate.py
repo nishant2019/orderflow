@@ -33,9 +33,11 @@ def test_table_reads_exactly(shot):
     img = cv2.imread(str(image_path(shot)))
     cols = read_table(img, calibrate_table(img), load_table_classifier())
     for name in ROW_NAMES:
-        for col, text in enumerate(TABLE_TRUTH[shot][name]):
+        for col, text in enumerate(TABLE_TRUTH[shot].get(name, [])):  # shots3 entries label only the Delta % row
             if text is not None:
                 assert getattr(cols[col], name).value == parse_signed(text), (name, col)
+    for col, text in enumerate(TABLE_TRUTH[shot].get("delta_pct", [])):
+        assert cols[col].delta_pct.raw == text, ("delta_pct", col, cols[col].delta_pct.raw)
 
 
 @pytest.mark.parametrize("shot", [2, 3, 4, 5])
