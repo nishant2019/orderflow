@@ -22,7 +22,7 @@ def load(name):
 
 
 stems = sorted(p.stem for p in T.glob("split[0-9]*.png"))
-for d in ("shots", "shots2"):  # the uploaded GoCharting shots
+for d in ("shots", "shots2", "shots3"):  # the uploaded GoCharting shots
     stems += sorted(f"../../{d}/{p.stem}" for p in (ROOT / d).glob("*.png"))
 base = {"cells": load("cell_glyphs.npz"), "table": load("table_glyphs.npz"), "profile": load("profile_glyphs.npz")}
 manual = json.loads((T / "profile2_truth.json").read_text())
