@@ -149,7 +149,12 @@ def train_rounds(stems: list[str], base: dict[str, tuple[np.ndarray, np.ndarray]
         acc = {"cells": Samples(), "table": Samples(), "profile": Samples()}
         totals = [0] * 6
         for stem in stems:
-            v = verify_image(tests_dir / f"{stem}.png", models)
+            try:
+                v = verify_image(tests_dir / f"{stem}.png", models)
+            except ValueError as e:  # a screenshot the geometry cannot be fitted to yet: skip it this round
+                if verbose:
+                    print(f"  skipped {stem}: {e}")
+                continue
             for key in acc:
                 acc[key].features += getattr(v, key).features
                 acc[key].labels += getattr(v, key).labels

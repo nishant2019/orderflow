@@ -94,7 +94,7 @@ def fit_text_row_grid(img: np.ndarray, axis: PriceAxis, table: TableGeometry, bo
             mask = _blackhat(img, y_lo, y_hi, a, b).astype(np.uint8)
             _, _, stats, _ = cv2.connectedComponentsWithStats(mask, connectivity=8)
             for x, y, w, h, area in stats[1:]:
-                if 7 <= h <= 12 and w >= 3:
+                if 5 <= h <= 12 and w >= 3:
                     tops.append(y + y_lo)
                     heights.append(h)
     if len(tops) < 8:

@@ -72,7 +72,7 @@ def find_table_rows(img: np.ndarray) -> tuple[int, int]:
     blocks = [b for b in _contiguous(rows) if b[1] - b[0] + 1 >= MIN_TABLE_HEIGHT]
     if not blocks:
         raise ValueError("summary table not found")
-    return max(blocks, key=lambda b: b[1] - b[0])
+    return blocks[-1]  # the table is the lowest dense block (dense footprint cells can form taller ones above it)
 
 
 def _x_extent(img: np.ndarray, y0: int, y1: int) -> tuple[int, int]:

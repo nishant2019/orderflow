@@ -1,4 +1,4 @@
-"""Self-train the split-layout classifiers from the screenshots in tests/data (split1..splitN).
+"""Self-train the split-layout classifiers from the screenshots in tests/data (split1..splitN) and shots/.
 
 Glyphs are kept as training labels only when their cell, column and profile row agree with the
 chart's own checksums (see orderflow.selftrain). Hand-transcribed data (table_truth.json,
@@ -22,6 +22,7 @@ def load(name):
 
 
 stems = sorted(p.stem for p in T.glob("split[0-9]*.png"))
+stems += sorted(f"../../shots/{p.stem}" for p in (ROOT / "shots").glob("*.png"))  # the uploaded GoCharting shots
 base = {"cells": load("cell_glyphs.npz"), "table": load("table_glyphs.npz"), "profile": load("profile_glyphs.npz")}
 manual = json.loads((T / "profile2_truth.json").read_text())
 _, extras = train_rounds(stems, base, T, manual, rounds=4)

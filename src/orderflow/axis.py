@@ -23,6 +23,20 @@ PRICE_RE = re.compile(r"^-?[\d,]+\.\d+$")
 
 
 @dataclass(frozen=True)
+class AxisFont:
+    """Geometry of the axis font: the character advance, the cell height and the digit height."""
+    cell_w: int
+    cell_h: int
+    glyph_rows: int
+    templates: str
+
+
+FONT_LARGE = AxisFont(9, 12, 9, "axis_templates.npz")  # the original screenshots
+FONT_SMALL = AxisFont(7, 11, 8, "axis_templates_small.npz")  # screenshots with a smaller axis font (7 px advance)
+FONTS = (FONT_LARGE, FONT_SMALL)
+
+
+@dataclass(frozen=True)
 class LabelBand:
     y_top: int
     y_bottom: int  # inclusive
@@ -31,7 +45,7 @@ class LabelBand:
 
     @property
     def y_center(self) -> float:
-        return self.y_top + (GLYPH_ROWS - 1) / 2
+        return self.y_top + (self.y_bottom - self.y_top) / 2 if self.y_bottom - self.y_top + 1 <= 9 else self.y_top + (GLYPH_ROWS - 1) / 2
 
 
 def _runs(idx: np.ndarray, gap: int) -> list[tuple[int, int]]:
@@ -67,21 +81,21 @@ def find_label_bands(img: np.ndarray) -> list[LabelBand]:
     return bands
 
 
-def cell_patch(img: np.ndarray, band: LabelBand, k: int) -> np.ndarray:
-    """Float patch (CELL_H x CELL_W, 0..1 ink) of the k-th character from the right."""
-    x_end = band.right_edge - CELL_W * k
-    x_start = x_end - CELL_W + 1
+def cell_patch(img: np.ndarray, band: LabelBand, k: int, font: AxisFont = FONT_LARGE) -> np.ndarray:
+    """Float patch (cell_h x cell_w, 0..1 ink) of the k-th character from the right."""
+    x_end = band.right_edge - font.cell_w * k
+    x_start = x_end - font.cell_w + 1
     if x_start < 0 or x_end < band.left_edge:  # beyond the label: other chart ink
-        return np.zeros((CELL_H, CELL_W), dtype=np.float32)
-    crop = img[band.y_top : band.y_top + CELL_H, x_start : x_end + 1].min(axis=2)
+        return np.zeros((font.cell_h, font.cell_w), dtype=np.float32)
+    crop = img[band.y_top : band.y_top + font.cell_h, x_start : x_end + 1].min(axis=2)
     ink = 1.0 - crop.astype(np.float32) / 255.0
     ink[ink < 0.3] = 0.0  # drop faint gridline/tick residue
     return ink
 
 
-def band_patches(img: np.ndarray, band: LabelBand, max_chars: int = 10) -> list[np.ndarray]:
+def band_patches(img: np.ndarray, band: LabelBand, max_chars: int = 10, font: AxisFont = FONT_LARGE) -> list[np.ndarray]:
     """Character patches left-to-right."""
-    patches = [cell_patch(img, band, k) for k in range(max_chars)]
+    patches = [cell_patch(img, band, k, font) for k in range(max_chars)]
     while patches and patches[-1].sum() < 1.0:  # trim empty leading cells
         patches.pop()
     return patches[::-1]
@@ -99,7 +113,9 @@ class GlyphTemplates:
         self.patches = patches
 
     @classmethod
-    def load(cls, path: Path = TEMPLATE_FILE) -> "GlyphTemplates":
+    def load(cls, path: Path | str = TEMPLATE_FILE) -> "GlyphTemplates":
+        if isinstance(path, str):
+            path = Path(__file__).parent / "data" / path
         data = np.load(path, allow_pickle=False)
         return cls(list(data["chars"]), data["patches"])
 
@@ -138,11 +154,12 @@ def _shifted_variants(patch: np.ndarray) -> list[np.ndarray]:
     return out
 
 
-def read_band(img: np.ndarray, band: LabelBand, tpl: GlyphTemplates, max_dist: float = 1.5) -> str | None:
-    if band.y_bottom - band.y_top + 1 < GLYPH_ROWS:
+def read_band(img: np.ndarray, band: LabelBand, tpl: GlyphTemplates, max_dist: float = 1.5,
+              font: AxisFont = FONT_LARGE) -> str | None:
+    if band.y_bottom - band.y_top + 1 < font.glyph_rows:
         return None  # clipped by the frame
     out = ""
-    for p in band_patches(img, band):
+    for p in band_patches(img, band, font=font):
         ch, dist = tpl.classify(p)
         if dist > max_dist:
             return None
@@ -168,13 +185,12 @@ def parse_price(text: str) -> float:
     return float(text.replace(",", ""))
 
 
-def calibrate_price_axis(img: np.ndarray, tpl: GlyphTemplates | None = None) -> PriceAxis:
-    tpl = tpl or GlyphTemplates.load()
+def _calibrate(img: np.ndarray, font: AxisFont, tpl: GlyphTemplates) -> PriceAxis:
     pts = []
     for band in find_label_bands(img):
-        text = read_band(img, band, tpl)
+        text = read_band(img, band, tpl, max_dist=1.5 if font is FONT_LARGE else 3.0, font=font)
         if text and PRICE_RE.match(text):
-            pts.append((band.y_center, parse_price(text)))
+            pts.append((band.y_top + (font.glyph_rows - 1) / 2, parse_price(text)))
     if len(pts) < 3:
         raise ValueError(f"only {len(pts)} price labels read; cannot calibrate")
     # Other label columns (e.g. the lower pane's "0.000") also look like prices; the true
@@ -190,3 +206,16 @@ def calibrate_price_axis(img: np.ndarray, tpl: GlyphTemplates | None = None) -> 
     if resid.max() > MAX_FIT_RESIDUAL_PX:
         raise ValueError("price labels are not evenly spaced")
     return PriceAxis(float(slope), float(intercept), float(resid.max()), tuple(pts))
+
+
+def calibrate_price_axis(img: np.ndarray, tpl: GlyphTemplates | None = None) -> PriceAxis:
+    """Try each known axis font (large first); the one that reads an evenly spaced axis wins."""
+    if tpl is not None:
+        return _calibrate(img, FONT_LARGE, tpl)
+    err: Exception | None = None
+    for font in FONTS:
+        try:
+            return _calibrate(img, font, GlyphTemplates.load(font.templates))
+        except (ValueError, FileNotFoundError) as e:
+            err = err or e
+    raise err  # type: ignore[misc]

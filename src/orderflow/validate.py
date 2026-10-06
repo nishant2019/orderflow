@@ -156,7 +156,7 @@ def _check_cum_chain(reports: list[ColumnReport], table: list[TableColumn]) -> N
         reset = abs(tcol.delta.value - tcol.cum.value) <= tol
         if chained or reset:
             reports[c].checks.append(Check("cum", "ok", "chain" if chained else "session reset"))
-        elif c == 0 or table[c - 1].clipped:
+        elif c == 0 or table[c - 1].clipped or table[c - 1].cum.value is None:
             reports[c].checks.append(Check("cum", "skip", "previous bar not fully visible"))
         else:
             reports[c].checks.append(
