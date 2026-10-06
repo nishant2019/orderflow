@@ -9,6 +9,7 @@ the process repeats so that cells that failed before get another chance.
 """
 from __future__ import annotations
 
+from concurrent.futures import ProcessPoolExecutor
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -138,6 +139,16 @@ def _merge(base: tuple[np.ndarray, np.ndarray], extra: Samples) -> tuple[np.ndar
     return np.concatenate([base[0], f]), np.concatenate([base[1], l])
 
 
+WORKERS = 4
+
+
+def _verify_or_none(path, models):
+    try:
+        return verify_image(path, models)
+    except ValueError:
+        return None
+
+
 def train_rounds(stems: list[str], base: dict[str, tuple[np.ndarray, np.ndarray]], tests_dir: Path,
                  manual_profile: dict[str, list[list[str]]], rounds: int = 3, verbose: bool = True):
     """Iteratively grow the classifiers from verified glyphs. Returns (classifiers, extras)
@@ -148,12 +159,13 @@ def train_rounds(stems: list[str], base: dict[str, tuple[np.ndarray, np.ndarray]
     for rnd in range(1, rounds + 1):
         acc = {"cells": Samples(), "table": Samples(), "profile": Samples()}
         totals = [0] * 6
-        for stem in stems:
-            try:
-                v = verify_image(tests_dir / f"{stem}.png", models)
-            except ValueError as e:  # a screenshot the geometry cannot be fitted to yet: skip it this round
+        paths = [tests_dir / f"{stem}.png" for stem in stems]
+        with ProcessPoolExecutor(WORKERS) as pool:
+            results = list(pool.map(_verify_or_none, paths, [models] * len(paths)))
+        for stem, v in zip(stems, results):
+            if v is None:  # a screenshot the geometry cannot be fitted to yet: skip it this round
                 if verbose:
-                    print(f"  skipped {stem}: {e}")
+                    print(f"  skipped {stem}")
                 continue
             for key in acc:
                 acc[key].features += getattr(v, key).features
