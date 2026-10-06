@@ -7,6 +7,7 @@ import statistics
 import cv2
 from pathlib import Path
 
+from .divergence import find_divergence_bands
 from .candles import Candle, bucket, find_candles
 from .cells import CellText
 from .layout import detect_layout
@@ -226,6 +227,7 @@ def _build(path, geo: ShotGeometry, layout: str, table, reports, labels, profile
     candle_checks = validate_candles(
         candles, traded, geo.grid.price_step, abs(geo.axis.slope), [lab.date is not None for lab in labels]
     )
+    bands = find_divergence_bands(geo.raw, geo.table.col_edges, geo.table.y_top)
     bars = [
         _bar_json(
             geo, i, table[i], reports[i], labels[i], times[i], poc.get(i),
@@ -233,6 +235,8 @@ def _build(path, geo: ShotGeometry, layout: str, table, reports, labels, profile
         )
         for i in range(geo.table.n_cols)
     ]
+    for b in bars:
+        b["platform_divergence"] = bands.get(b["index"])  # "red" | "green" | None: the chart's own marker
     doc = {
         "schema_version": SCHEMA_VERSION,
         "layout": layout,

@@ -283,3 +283,18 @@ def test_the_dashed_line_does_not_corrupt_the_text_under_it(docs):
     top = {c["price"]: c for c in docs["split10"]["bars"][13]["cells"] if "bid" in c}
     assert (top[1405.0]["bid"], top[1405.0]["ask"]) == (19000.0, 51000.0)  # '19K | 51K' sits right under the line
     assert docs["split10"]["bars"][14]["valid"]
+
+
+def test_divergence_bands_match_candle_vs_delta():
+    """The platform's pale bands mark bars whose candle direction opposes the delta sign."""
+    from orderflow.assemble import parse_screenshot
+
+    expect = {"split11": {0, 4, 12}, "split12": {1, 3, 12}, "split13": {4, 7, 9}, "split1": set()}
+    for stem, idx in expect.items():
+        doc = parse_screenshot(f"tests/data/{stem}.png")
+        marked = {b["index"] for b in doc["bars"] if b["platform_divergence"]}
+        assert marked == idx, stem
+        for b in doc["bars"]:
+            if b["platform_divergence"]:
+                up = b["ohlc"]["direction"] == "up"
+                assert (b["platform_divergence"] == "red") == (up and b["delta"]["value"] < 0)
