@@ -1,0 +1,146 @@
+{
+ "shots/ABCAPITAL": {
+  "bars": 13,
+  "clipped": 1,
+  "delta_pct": false,
+  "has_cum_pane": true,
+  "imbalance_shown": false,
+  "step": 0.35,
+  "valid": 12
+ },
+ "shots/CHENNPETRO": {
+  "bars": 13,
+  "clipped": 1,
+  "delta_pct": false,
+  "has_cum_pane": true,
+  "imbalance_shown": false,
+  "step": 5.0,
+  "valid": 12
+ },
+ "shots/EBGNG": {
+  "bars": 13,
+  "clipped": 1,
+  "delta_pct": false,
+  "has_cum_pane": true,
+  "imbalance_shown": false,
+  "step": 1.0,
+  "valid": 12
+ },
+ "shots/GRAPHITE": {
+  "bars": 13,
+  "clipped": 1,
+  "delta_pct": false,
+  "has_cum_pane": true,
+  "imbalance_shown": false,
+  "step": 1.0,
+  "valid": 11
+ },
+ "shots/GROWW": {
+  "bars": 13,
+  "clipped": 1,
+  "delta_pct": false,
+  "has_cum_pane": true,
+  "imbalance_shown": false,
+  "step": 0.36,
+  "valid": 11
+ },
+ "shots/NUVAMA": {
+  "bars": 13,
+  "clipped": 1,
+  "delta_pct": false,
+  "has_cum_pane": true,
+  "imbalance_shown": false,
+  "step": 5.0,
+  "valid": 10
+ },
+ "shots/VBL": {
+  "bars": 13,
+  "clipped": 1,
+  "delta_pct": false,
+  "has_cum_pane": true,
+  "imbalance_shown": false,
+  "step": 0.65,
+  "valid": 12
+ },
+ "shots2/AARTIIND": {
+  "bars": 3,
+  "clipped": 0,
+  "delta_pct": false,
+  "has_cum_pane": true,
+  "imbalance_shown": true,
+  "step": 0.8,
+  "valid": 3
+ },
+ "shots2/BHEL": {
+  "bars": 3,
+  "clipped": 0,
+  "delta_pct": false,
+  "has_cum_pane": true,
+  "imbalance_shown": true,
+  "step": 1.0,
+  "valid": 3
+ },
+ "shots2/FIVESTAR": {
+  "bars": 3,
+  "clipped": 0,
+  "delta_pct": false,
+  "has_cum_pane": true,
+  "imbalance_shown": true,
+  "step": 0.65,
+  "valid": 2
+ },
+ "shots2/IRCON": {
+  "bars": 3,
+  "clipped": 0,
+  "delta_pct": false,
+  "has_cum_pane": true,
+  "imbalance_shown": true,
+  "step": 0.16,
+  "valid": 3
+ },
+ "shots2/MOTILALOFS": {
+  "bars": 3,
+  "clipped": 0,
+  "delta_pct": false,
+  "has_cum_pane": true,
+  "imbalance_shown": true,
+  "step": 1.0,
+  "valid": 3
+ },
+ "shots3/AARTIIND": {
+  "bars": 8,
+  "clipped": 0,
+  "delta_pct": true,
+  "has_cum_pane": true,
+  "imbalance_shown": false,
+  "step": 1.0,
+  "valid": 8
+ },
+ "shots3/BHEL": {
+  "bars": 8,
+  "clipped": 0,
+  "delta_pct": true,
+  "has_cum_pane": true,
+  "imbalance_shown": false,
+  "step": 1.0,
+  "valid": 8
+ },
+ "shots3/FIVESTAR": {
+  "bars": 8,
+  "clipped": 0,
+  "delta_pct": true,
+  "has_cum_pane": true,
+  "imbalance_shown": false,
+  "step": 0.65,
+  "valid": 7
+ },
+ "shots3/KSHINTL": {
+  "bars": 8,
+  "clipped": 0,
+  "delta_pct": true,
+  "has_cum_pane": true,
+  "imbalance_shown": false,
+  "step": 1.0,
+  "valid": 8
+ }
+}
