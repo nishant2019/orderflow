@@ -17,6 +17,21 @@ doc = parse_screenshot("screenshot.png")
 result = analyze(doc, Thresholds(absorption_min_share=0.3))   # thresholds are tunable
 ```
 
+## Web app (prototype)
+
+```
+python -m orderflow.webapp                 # then open http://127.0.0.1:8000/
+python -m orderflow.webapp --port 9000     # another port; --host 0.0.0.0 would expose it to your network
+```
+Pick (or drag in) a screenshot and press **Read chart**: the page shows a summary (bars read, price step, current
+price, profile POC, whether imbalance is drawn), then tabs for **Bars** (volume, delta, Delta %, cumulative delta,
+candle, status of each bar), **Footprint** (bid x ask ladder of one bar with imbalance, POC, inferred/corrected
+cells), **Volume profile**, **Signals** (per-bar signals, support/resistance, Delta % by bar) and the full **JSON**
+(download or copy). Reading takes 10-30 s. Bars that failed a cross-check are marked, never hidden. The server uses
+only the standard library, answers one request at a time per CPU-heavy read (2 at once), has no authentication and
+keeps nothing: uploaded pictures live in a temporary folder for the duration of the read. It is a local prototype -
+do not put it on the internet. The same function is available as `orderflow.webapp.read_chart(bytes, filename)`.
+
 ## Two chart layouts
 
 | | **split** (the main source) | single (older samples) |

@@ -1,0 +1,370 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Footprint Reader</title>
+<style>
+  :root {
+    --bg: #f6f7f9; --panel: #ffffff; --ink: #1c2330; --muted: #5f6b7c; --line: #e2e6ec;
+    --accent: #2a5bd7; --accent-ink: #ffffff;
+    --buy: #168a45; --buy-bg: #dff3e7; --sell: #c8342f; --sell-bg: #fbe3e1;
+    --warn: #9a6200; --warn-bg: #fff1d6; --neutral-bg: #eceff4;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #12151b; --panel: #1b2029; --ink: #e6e9ef; --muted: #98a3b5; --line: #2b323f;
+      --accent: #6b95ff; --accent-ink: #0d1424;
+      --buy: #4fcf84; --buy-bg: #163a27; --sell: #ff7b73; --sell-bg: #45201e;
+      --warn: #f0b34a; --warn-bg: #3d2f12; --neutral-bg: #262d39;
+    }
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--bg); color: var(--ink);
+         font: 15px/1.45 system-ui, -apple-system, "Segoe UI", Roboto, sans-serif; }
+  main { max-width: 1180px; margin: 0 auto; padding: 24px 16px 64px; }
+  h1 { font-size: 24px; margin: 0 0 4px; }
+  h2 { font-size: 16px; margin: 0 0 12px; }
+  .sub { color: var(--muted); margin: 0 0 20px; }
+  .panel { background: var(--panel); border: 1px solid var(--line); border-radius: 10px; padding: 16px; margin-bottom: 16px; }
+  .drop { border: 2px dashed var(--line); border-radius: 10px; padding: 28px 16px; text-align: center;
+          color: var(--muted); cursor: pointer; }
+  .drop.over, .drop:focus-visible { border-color: var(--accent); color: var(--ink); outline: none; }
+  .drop strong { color: var(--ink); }
+  .row { display: flex; gap: 16px; flex-wrap: wrap; align-items: flex-start; }
+  .preview { max-width: 360px; width: 100%; border: 1px solid var(--line); border-radius: 8px; }
+  .controls { flex: 1; min-width: 240px; display: flex; flex-direction: column; gap: 12px; }
+  button { font: inherit; border-radius: 8px; border: 1px solid var(--line); background: var(--panel); color: var(--ink);
+           padding: 8px 14px; cursor: pointer; }
+  button.primary { background: var(--accent); color: var(--accent-ink); border-color: var(--accent); font-weight: 600; }
+  button:disabled { opacity: .5; cursor: default; }
+  label.check { display: flex; gap: 8px; align-items: center; color: var(--muted); }
+  .status { color: var(--muted); min-height: 1.4em; }
+  .status.err { color: var(--sell); }
+  .spin { display: inline-block; width: 12px; height: 12px; border: 2px solid var(--line); border-top-color: var(--accent);
+          border-radius: 50%; animation: spin .8s linear infinite; vertical-align: -1px; margin-right: 6px; }
+  @keyframes spin { to { transform: rotate(360deg); } }
+  .cards { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 10px; }
+  .card { border: 1px solid var(--line); border-radius: 8px; padding: 10px 12px; }
+  .card .k { color: var(--muted); font-size: 12px; text-transform: uppercase; letter-spacing: .04em; }
+  .card .v { font-size: 20px; font-weight: 650; }
+  .card .n { color: var(--muted); font-size: 12px; }
+  .tabs { display: flex; gap: 4px; border-bottom: 1px solid var(--line); margin-bottom: 14px; flex-wrap: wrap; }
+  .tabs button { border: none; border-bottom: 2px solid transparent; border-radius: 0; background: none; padding: 8px 12px; color: var(--muted); }
+  .tabs button[aria-selected="true"] { color: var(--ink); border-bottom-color: var(--accent); font-weight: 600; }
+  .scroll { overflow-x: auto; }
+  table { border-collapse: collapse; width: 100%; font-variant-numeric: tabular-nums; }
+  th, td { padding: 6px 10px; text-align: right; border-bottom: 1px solid var(--line); white-space: nowrap; }
+  th { color: var(--muted); font-weight: 600; font-size: 12px; text-transform: uppercase; letter-spacing: .03em; }
+  th:first-child, td:first-child, td.l, th.l { text-align: left; }
+  tr.sel td { background: var(--neutral-bg); }
+  tr.clickable { cursor: pointer; }
+  .pos { color: var(--buy); } .neg { color: var(--sell); }
+  .chip { display: inline-block; border-radius: 999px; padding: 1px 9px; font-size: 12px; font-weight: 600; background: var(--neutral-bg); }
+  .chip.ok { background: var(--buy-bg); color: var(--buy); }
+  .chip.bad { background: var(--sell-bg); color: var(--sell); }
+  .chip.warn { background: var(--warn-bg); color: var(--warn); }
+  .chip.bull { background: var(--buy-bg); color: var(--buy); }
+  .chip.bear { background: var(--sell-bg); color: var(--sell); }
+  .bar { display: inline-block; height: 10px; vertical-align: middle; border-radius: 2px; }
+  .bar.buy { background: var(--buy); } .bar.sell { background: var(--sell); } .bar.vol { background: var(--accent); opacity: .55; }
+  .poc td { font-weight: 700; }
+  .flag { font-size: 11px; font-weight: 700; padding: 0 5px; border-radius: 4px; margin-left: 4px; }
+  .flag.s { background: var(--sell-bg); color: var(--sell); } .flag.b { background: var(--buy-bg); color: var(--buy); }
+  .note { color: var(--muted); font-size: 13px; margin: 8px 0 0; }
+  .warnbox { background: var(--warn-bg); color: var(--warn); border-radius: 8px; padding: 8px 12px; margin-bottom: 12px; font-size: 14px; }
+  pre { margin: 0; max-height: 520px; overflow: auto; background: var(--bg); border: 1px solid var(--line); border-radius: 8px;
+        padding: 12px; font-size: 12px; }
+  select { font: inherit; padding: 6px 8px; border-radius: 8px; border: 1px solid var(--line); background: var(--panel); color: var(--ink); }
+  ul.plain { list-style: none; padding: 0; margin: 0; }
+  ul.plain li { padding: 8px 0; border-bottom: 1px solid var(--line); }
+  .hidden { display: none !important; }
+  .grid2 { display: grid; grid-template-columns: repeat(auto-fit, minmax(320px, 1fr)); gap: 16px; }
+</style>
+</head>
+<body>
+<main>
+  <h1>Footprint Reader</h1>
+  <p class="sub">Choose a GoCharting footprint screenshot and get the chart back as data: bars, cells, volume profile,
+    candles and order-flow signals. Nothing leaves this computer.</p>
+
+  <section class="panel" aria-label="Choose a picture">
+    <div class="row">
+      <div style="flex:1; min-width:260px">
+        <div id="drop" class="drop" tabindex="0" role="button" aria-label="Choose a screenshot">
+          <p style="margin:0 0 6px"><strong>Drop a screenshot here</strong> or click to choose one</p>
+          <p style="margin:0; font-size:13px">PNG or JPEG, up to 20 MB</p>
+        </div>
+        <input id="file" type="file" accept="image/png,image/jpeg,image/*" class="hidden">
+      </div>
+      <div class="controls">
+        <img id="preview" class="preview hidden" alt="Selected screenshot">
+        <label class="check"><input id="analyze" type="checkbox" checked> Include order-flow analysis</label>
+        <div><button id="go" class="primary" disabled>Read chart</button></div>
+        <div id="status" class="status" role="status" aria-live="polite"></div>
+      </div>
+    </div>
+  </section>
+
+  <div id="results" class="hidden">
+    <section class="panel"><h2>Summary</h2><div id="cards" class="cards"></div><div id="warnings"></div></section>
+
+    <section class="panel">
+      <div class="tabs" role="tablist" id="tabs"></div>
+      <div id="tab-bars" class="tabpane"></div>
+      <div id="tab-footprint" class="tabpane hidden"></div>
+      <div id="tab-profile" class="tabpane hidden"></div>
+      <div id="tab-signals" class="tabpane hidden"></div>
+      <div id="tab-json" class="tabpane hidden"></div>
+    </section>
+  </div>
+</main>
+
+<script>
+"use strict";
+const $ = (id) => document.getElementById(id);
+
+// ---- tiny DOM helper: text goes in through textContent, never innerHTML ------------------------------------
+function h(tag, attrs, ...kids) {
+  const el = document.createElement(tag);
+  for (const [k, v] of Object.entries(attrs || {})) {
+    if (v == null || v === false) continue;
+    if (k === "class") el.className = v;
+    else if (k.startsWith("on")) el.addEventListener(k.slice(2), v);
+    else el.setAttribute(k, v === true ? "" : v);
+  }
+  for (const kid of kids.flat()) {
+    if (kid == null || kid === false) continue;
+    el.append(kid instanceof Node ? kid : document.createTextNode(String(kid)));
+  }
+  return el;
+}
+const clear = (el) => { while (el.firstChild) el.removeChild(el.firstChild); return el; };
+
+// ---- number formatting -----------------------------------------------------------------------------------
+function compact(v) {
+  if (v == null) return "–";
+  const a = Math.abs(v);
+  if (a >= 1e6) return (v / 1e6).toFixed(2).replace(/\.?0+$/, "") + "M";
+  if (a >= 1e3) return (v / 1e3).toFixed(a >= 1e5 ? 1 : 2).replace(/\.?0+$/, "") + "K";
+  return String(Math.round(v));
+}
+const price = (v) => (v == null ? "–" : v.toLocaleString(undefined, { maximumFractionDigits: 3 }));
+const signed = (v, f = compact) => (v == null ? "–" : (v > 0 ? "+" : "") + f(v));
+const cls = (v) => (v > 0 ? "pos" : v < 0 ? "neg" : "");
+
+// ---- file selection --------------------------------------------------------------------------------------
+let chosen = null, result = null;
+const drop = $("drop"), fileInput = $("file");
+drop.addEventListener("click", () => fileInput.click());
+drop.addEventListener("keydown", (e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); fileInput.click(); } });
+["dragenter", "dragover"].forEach((t) => drop.addEventListener(t, (e) => { e.preventDefault(); drop.classList.add("over"); }));
+["dragleave", "drop"].forEach((t) => drop.addEventListener(t, (e) => { e.preventDefault(); drop.classList.remove("over"); }));
+drop.addEventListener("drop", (e) => { if (e.dataTransfer.files[0]) choose(e.dataTransfer.files[0]); });
+fileInput.addEventListener("change", () => { if (fileInput.files[0]) choose(fileInput.files[0]); });
+
+function setStatus(msg, kind, busy) {
+  const s = $("status");
+  clear(s).className = "status" + (kind === "err" ? " err" : "");
+  if (busy) s.append(h("span", { class: "spin" }));
+  s.append(msg || "");
+}
+
+function choose(file) {
+  if (!file.type.startsWith("image/")) { setStatus("That is not a picture. Choose a PNG or JPEG screenshot.", "err"); return; }
+  chosen = file;
+  const pv = $("preview");
+  pv.src = URL.createObjectURL(file);
+  pv.classList.remove("hidden");
+  $("go").disabled = false;
+  setStatus(file.name + " (" + (file.size / 1024).toFixed(0) + " KB)");
+}
+
+$("go").addEventListener("click", async () => {
+  if (!chosen) return;
+  const btn = $("go");
+  btn.disabled = true;
+  $("results").classList.add("hidden");
+  const t0 = Date.now();
+  const timer = setInterval(() => setStatus("Reading the chart… " + Math.round((Date.now() - t0) / 1000) + " s (usually 10–30 s)", "", true), 500);
+  setStatus("Reading the chart…", "", true);
+  try {
+    const res = await fetch("/api/parse?analyze=" + ($("analyze").checked ? "1" : "0"), {
+      method: "POST", headers: { "Content-Type": "application/octet-stream", "X-Filename": encodeURIComponent(chosen.name) }, body: chosen,
+    });
+    const body = await res.json().catch(() => ({ error: "the server sent an unreadable answer" }));
+    if (!res.ok) throw new Error(body.error || res.statusText);
+    result = body;
+    render(body);
+    setStatus("Done in " + Math.round((Date.now() - t0) / 1000) + " s.");
+  } catch (e) {
+    setStatus(e.message || String(e), "err");
+  } finally {
+    clearInterval(timer);
+    btn.disabled = false;
+  }
+});
+
+// ---- rendering -------------------------------------------------------------------------------------------
+const TABS = [["bars", "Bars"], ["footprint", "Footprint"], ["profile", "Volume profile"], ["signals", "Signals"], ["json", "JSON"]];
+let activeTab = "bars", activeBar = 0;
+
+function render(r) {
+  const doc = r.parsed;
+  $("results").classList.remove("hidden");
+  renderCards(doc);
+  const tabs = clear($("tabs"));
+  for (const [id, label] of TABS) {
+    if (id === "signals" && !(r.analysis && !r.analysis.error)) continue;
+    if (id === "profile" && !(doc.profile && doc.profile.length)) continue;
+    tabs.append(h("button", { role: "tab", "aria-selected": String(id === activeTab), onclick: () => showTab(id) }, label));
+  }
+  if (!document.querySelector('#tabs [aria-selected="true"]')) activeTab = "bars";
+  activeBar = Math.max(0, doc.bars.findIndex((b) => b.valid));
+  renderBars(doc); renderFootprint(doc); renderProfile(doc); renderSignals(r); renderJson(r);
+  showTab(activeTab);
+}
+
+function showTab(id) {
+  activeTab = id;
+  for (const b of $("tabs").children) b.setAttribute("aria-selected", String(b.textContent === TABS.find((t) => t[0] === id)[1]));
+  document.querySelectorAll(".tabpane").forEach((p) => p.classList.toggle("hidden", p.id !== "tab-" + id));
+}
+
+function card(k, v, n) { return h("div", { class: "card" }, h("div", { class: "k" }, k), h("div", { class: "v" }, v), n ? h("div", { class: "n" }, n) : null); }
+
+function renderCards(doc) {
+  const s = doc.summary, p = doc.price;
+  const cards = clear($("cards"));
+  cards.append(
+    card("Bars read", s.valid_bars + " / " + s.bars, s.flagged_bars.length ? s.flagged_bars.length + " flagged" : "all checks passed"),
+    card("Price step", price(p.step_per_row), "per footprint row"),
+    card("Current price", p.current != null ? price(p.current) : "–", p.current != null ? "dashed line on the chart" : "not drawn on this chart"),
+    card("Last close", price(p.last_close)),
+    card("Profile POC", p.poc_line != null ? price(p.poc_line) : "–", "pink line"),
+    card("Imbalance", doc.imbalance && doc.imbalance.shown ? "drawn" : "computed",
+         doc.imbalance && doc.imbalance.ratio ? "ratio " + Math.round(doc.imbalance.ratio * 100) + "%" : ""),
+  );
+  const warn = clear($("warnings"));
+  const msgs = [];
+  if (s.skipped_bars.length) msgs.push("Bar " + s.skipped_bars.join(", ") + " cannot be read (cut off by the image edge or outside the price range).");
+  if (s.flagged_bars.length) msgs.push("Bar " + s.flagged_bars.join(", ") + " failed a cross-check: treat those numbers with care.");
+  if (s.flagged_ohlc.length) msgs.push("The candle of bar " + s.flagged_ohlc.join(", ") + " failed a check.");
+  if (s.inferred_cells) msgs.push(s.inferred_cells + " cell(s) were hidden on the chart and solved from the totals.");
+  for (const m of msgs) warn.append(h("div", { class: "warnbox", style: "margin-top:12px" }, m));
+}
+
+function statusChip(b) {
+  if (b.clipped) return h("span", { class: "chip warn", title: "cut off by the image edge" }, "clipped");
+  if (b.valid) return h("span", { class: "chip ok" }, "valid");
+  if (b.failed_checks.length) return h("span", { class: "chip bad", title: "failed: " + b.failed_checks.join(", ") }, "check failed");
+  return h("span", { class: "chip warn", title: "no footprint cells in range" }, "skipped");
+}
+
+function renderBars(doc) {
+  const hasPct = doc.bars.some((b) => b.delta_pct);
+  const head = ["#", "Time", "Volume", "Delta"].concat(hasPct ? ["Delta %"] : [], ["Cum. delta", "Open", "High", "Low", "Close", "POC", "Marker", "Status"]);
+  const rows = doc.bars.map((b) => {
+    const o = b.ohlc, d = b.delta.value;
+    return h("tr", { class: "clickable", onclick: () => { activeBar = b.index; renderFootprint(doc); showTab("footprint"); } },
+      h("td", null, b.index), h("td", { class: "l" }, b.time || "–"),
+      h("td", null, b.volume.text || "–"),
+      h("td", { class: cls(d) }, b.delta.text || "–"),
+      hasPct ? h("td", { class: cls(b.delta_pct && b.delta_pct.value) }, b.delta_pct ? signed(b.delta_pct.value, (v) => v.toFixed(2) + "%") : "–") : null,
+      h("td", { class: cls(b.cum_delta.value) }, b.cum_delta.text || "–"),
+      h("td", null, o ? price(o.open) : "–"), h("td", null, o ? price(o.high) : "–"),
+      h("td", null, o ? price(o.low) : "–"), h("td", null, o ? price(o.close) : "–"),
+      h("td", null, price(b.poc_price)),
+      h("td", null, b.platform_divergence ? h("span", { class: "chip " + (b.platform_divergence === "green" ? "bull" : "bear"), title: "the platform's delta-divergence marker" }, b.platform_divergence) : ""),
+      h("td", null, statusChip(b)));
+  });
+  clear($("tab-bars")).append(
+    h("div", { class: "scroll" }, h("table", null, h("thead", null, h("tr", null, head.map((t, i) => h("th", { class: i === 1 ? "l" : "" }, t)))), h("tbody", null, rows))),
+    h("p", { class: "note" }, "Values are as displayed on the chart (3.5K means 3,500 ± 50). Click a bar to see its footprint."));
+}
+
+function renderFootprint(doc) {
+  const pane = clear($("tab-footprint"));
+  const sel = h("select", { "aria-label": "Bar", onchange: (e) => { activeBar = +e.target.value; renderFootprint(doc); } },
+    doc.bars.map((b) => h("option", { value: b.index, selected: b.index === activeBar }, "Bar " + b.index + (b.time ? " · " + b.time : "") + (b.valid ? "" : " (not valid)"))));
+  const b = doc.bars[activeBar];
+  pane.append(h("div", { style: "display:flex; gap:12px; align-items:center; margin-bottom:12px; flex-wrap:wrap" }, sel, statusChip(b),
+    h("span", { class: "note", style: "margin:0" }, "volume " + (b.volume.text || "–") + " · delta " + (b.delta.text || "–") + " · POC " + price(b.poc_price))));
+  const cells = b.cells.filter((c) => c.bid != null);
+  if (!cells.length) { pane.append(h("p", { class: "note" }, "No readable footprint cells for this bar.")); return; }
+  const max = Math.max(...cells.map((c) => Math.max(c.bid, c.ask)), 1);
+  const rows = cells.map((c) => h("tr", { class: c.is_poc ? "poc" : "" },
+    h("td", { class: "l" }, price(c.price) + (c.is_poc ? "  POC" : "")),
+    h("td", null, h("span", { class: "bar sell", style: "width:" + Math.round(80 * c.bid / max) + "px" }), " ", c.bid_text || compact(c.bid), c.sell_imbalance ? h("span", { class: "flag s", title: "sell imbalance" }, "S") : null),
+    h("td", { class: "l" }, h("span", { class: "bar buy", style: "width:" + Math.round(80 * c.ask / max) + "px" }), " ", c.ask_text || compact(c.ask), c.buy_imbalance ? h("span", { class: "flag b", title: "buy imbalance" }, "B") : null),
+    h("td", { class: cls(c.delta) }, signed(c.delta)),
+    h("td", null, compact(c.total)),
+    h("td", { class: "l" }, c.inferred ? h("span", { class: "chip warn", title: "solved from the totals" }, "inferred") : c.corrected_from ? h("span", { class: "chip", title: "was read as " + c.corrected_from }, "corrected") : "")));
+  pane.append(h("div", { class: "scroll" }, h("table", null,
+    h("thead", null, h("tr", null, ["Price", "Bid (sells)", "Ask (buys)", "Delta", "Total", ""].map((t, i) => h("th", { class: i === 0 || i === 2 || i === 5 ? "l" : "" }, t)))),
+    h("tbody", null, rows))));
+  if (b.failed_checks.length) pane.append(h("p", { class: "note" }, "Failed checks: " + b.checks.filter((c) => c.status === "fail").map((c) => c.name + " (" + c.detail + ")").join("; ")));
+}
+
+function renderProfile(doc) {
+  const pane = clear($("tab-profile"));
+  const rows = doc.profile || [];
+  if (!rows.length) { pane.append(h("p", { class: "note" }, "This chart has no volume profile.")); return; }
+  const max = Math.max(...rows.map((r) => r.volume || 0), 1);
+  const ps = doc.profile_summary;
+  if (ps) pane.append(h("p", { class: "note", style: "margin:0 0 12px" },
+    "POC " + price(ps.poc) + (ps.value_area ? " · value area " + price(ps.value_area.low) + " – " + price(ps.value_area.high) : "") + " · total delta " + signed(ps.total_delta)));
+  pane.append(h("div", { class: "scroll" }, h("table", null,
+    h("thead", null, h("tr", null, ["Price", "Delta", "Volume", "", "Zone"].map((t, i) => h("th", { class: i === 3 || i === 4 ? "l" : "" }, t)))),
+    h("tbody", null, rows.map((r) => h("tr", { class: r.zone === "peak" ? "poc" : "" },
+      h("td", { class: "l" }, price(r.price)), h("td", { class: cls(r.delta) }, r.delta_text || signed(r.delta)),
+      h("td", null, r.volume_text || compact(r.volume)),
+      h("td", { class: "l" }, h("span", { class: "bar vol", style: "width:" + Math.round(160 * (r.volume || 0) / max) + "px" })),
+      h("td", { class: "l" }, r.zone + (r.valid ? "" : " · check failed"))))))));
+}
+
+function renderSignals(r) {
+  const pane = clear($("tab-signals"));
+  const a = r.analysis;
+  if (!a || a.error) { pane.append(h("p", { class: "note" }, a && a.error ? a.error : "Analysis was switched off.")); return; }
+  const chip = (bias) => h("span", { class: "chip " + (bias === "bullish" ? "bull" : bias === "bearish" ? "bear" : "") }, bias);
+  const perBar = a.bars.filter((b) => b.status === "analyzed" && b.signals.some((s) => s.type !== "poc" && s.type !== "unfinished_extreme"))
+    .map((b) => h("li", null,
+      h("div", { style: "font-weight:600; margin-bottom:4px" }, "Bar " + b.index + (b.time ? " · " + b.time : "")),
+      b.signals.filter((s) => s.type !== "poc" && s.type !== "unfinished_extreme").map((s) =>
+        h("div", { style: "margin:2px 0" }, chip(s.bias), " ", h("strong", null, s.type.replace(/_/g, " ")), " at ", price(s.price), " — ", s.text,
+          h("span", { class: "note" }, "  (strength " + s.strength + (s.confidence < 1 ? ", confidence " + s.confidence : "") + ")")))));
+  const levels = (a.levels || []).map((l) => h("tr", null,
+    h("td", { class: "l" }, price(l.price)), h("td", { class: "l" }, l.role), h("td", null, l.strength != null ? l.strength : "–"),
+    h("td", { class: "l" }, (l.kinds || []).join(", "))));
+  const flow = a.flow;
+  pane.append(h("div", { class: "grid2" },
+    h("div", null, h("h2", null, "Signals by bar"), perBar.length ? h("ul", { class: "plain" }, perBar) : h("p", { class: "note" }, "No signals fired.")),
+    h("div", null,
+      h("h2", null, "Support and resistance"),
+      levels.length ? h("div", { class: "scroll" }, h("table", null, h("thead", null, h("tr", null, ["Price", "Role", "Strength", "From"].map((t, i) => h("th", { class: i === 1 || i === 3 || i === 0 ? "l" : "" }, t)))), h("tbody", null, levels))) : h("p", { class: "note" }, "No levels."),
+      flow ? h("div", { style: "margin-top:16px" }, h("h2", null, "Delta % by bar"),
+        h("div", { class: "scroll" }, h("table", null, h("tbody", null,
+          flow.series.map((x) => h("tr", null, h("td", { class: "l" }, "Bar " + x.index),
+            h("td", { class: cls(x.delta_pct) }, x.delta_pct == null ? "–" : signed(x.delta_pct, (v) => v.toFixed(1) + "%")),
+            h("td", { class: "l" }, x.delta_pct == null ? "" : h("span", { class: "bar " + (x.delta_pct >= 0 ? "buy" : "sell"), style: "width:" + Math.min(120, Math.round(Math.abs(x.delta_pct) * 1.6)) + "px" })),
+            h("td", { class: "l note" }, x.source || "")))))),
+        flow.run ? h("p", { class: "note" }, chip(flow.run.bias), " ", flow.run.text) : null) : null)));
+}
+
+function renderJson(r) {
+  const text = JSON.stringify(r, null, 2);
+  const name = (r.parsed.source || "chart").replace(/\.[^.]+$/, "");
+  const download = () => {
+    const a = h("a", { href: URL.createObjectURL(new Blob([text], { type: "application/json" })), download: name + ".json" });
+    document.body.append(a); a.click(); a.remove();
+  };
+  clear($("tab-json")).append(
+    h("div", { style: "display:flex; gap:8px; margin-bottom:10px" },
+      h("button", { class: "primary", onclick: download }, "Download JSON"),
+      h("button", { onclick: async (e) => { await navigator.clipboard.writeText(text); e.target.textContent = "Copied"; setTimeout(() => (e.target.textContent = "Copy"), 1500); } }, "Copy")),
+    h("pre", null, text));
+}
+</script>
+</body>
+</html>
