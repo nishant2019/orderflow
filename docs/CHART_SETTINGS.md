@@ -38,3 +38,19 @@ Same boxes, fonts and black POC rectangle as variant B (centred candles), but:
 | Current-price dashed line in **darker red** or **teal** (tag on the right axis) | both colours are recognised (`price.current`) and patched out before reading |
 | A second pane below the price rows (cumulative-delta candles, amber dashed line) | not extracted; the candle search stops at the last price row so these candles are not taken for the bar's candle |
 | Near-white boxes for zero volume next to a drawn box | the row exists when either box is tinted; the white box is still read |
+
+## Variant D (`shots/`, `shots2/`, `shots3/`): uploaded stock charts, `NAME 30m DD-MM-YY` title
+
+Same boxes, black POC rectangle and divergence markers as variant C; recommended export has the imbalance display
+**off** (`shots/`, `shots3/`; `shots2/` still draws it). Differences from the earlier screenshots:
+
+| Difference | Handling |
+|---|---|
+| A title line (`VBL 30m 06-10-26`) instead of the "Charts powered by GoCharting" banner | not read; nothing depends on it |
+| Smaller **price-axis** font (7 px advance) and, on 4-digit prices, thousands separators (`1,844.00`) | second template set, `axis_templates_small.npz` |
+| Smaller **summary-table** font (9 px advance) | slot segmentation with a measured advance |
+| Footprint text as small as 6 px, rows 14 px apart | grid fitted on baselines; narrow touching digits split at the emptiest column |
+| `shots3/`: a **4th table row, Delta %** (delta / volume) | `bars[].delta_pct`, checked against the table |
+| `shots2/`, `shots3/`: early-session charts with 3 or 8 very wide columns (195 / 147 px) | column pitch measured per image |
+| An alert badge (`Alert @ 521.85`) drawn over the first column | its digits are ignored by the row-pitch fit |
+| Cumulative-delta candle pane with an amber dashed zero line | `cum_delta_candle` / `cum_delta_pane` |
