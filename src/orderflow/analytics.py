@@ -31,6 +31,10 @@ class Thresholds:
     rejection_min_wick_share: float = 0.5  # wick as a share of the candle range
     divergence_min_delta_ratio: float = 0.05  # |bar delta| / bar volume
     divergence_min_body_share: float = 0.25  # body as a share of the range (not a doji)
+    dominance_min_ratio: float = 0.30  # |delta| / volume (the chart's Delta %) for a one-sided bar
+    dominance_full_ratio: float = 0.60  # ... at which the signal's strength reaches 1
+    flow_min_ratio: float = 0.10  # a bar counts towards a run of same-sided delta from this |delta %|
+    flow_min_bars: int = 3  # consecutive same-sided bars that make a "persistent_delta" run
     hvn_min_ratio: float = 1.25  # profile row volume vs the median row for a high-volume node
     lvn_max_ratio: float = 0.5  # ... and for a low-volume node (a thin spot inside the range)
     tail_ratio: float = 0.10  # row volume vs the POC row below which the profile edge is a thin tail
@@ -53,6 +57,9 @@ class _Bar:
     partial: bool
     touches_view_edge: bool
     ohlc: dict | None = None  # validated candle, or None
+    delta_ratio: float | None = None  # delta / volume: the chart's Delta % when it shows it, else computed
+    delta_ratio_source: str | None = None  # "shown" | "computed"
+    platform_divergence: str | None = None  # the platform's own marker: "red" | "green"
 
 
 def _step(doc: dict) -> float:
@@ -65,6 +72,7 @@ def _prepare(doc: dict, bar: dict) -> _Bar:
     visible = doc["price"].get("visible")
     prices = [c["price"] for c in readable]
     edge = bool(visible and prices and (max(prices) >= visible["high"] or min(prices) <= visible["low"]))
+    ratio, source = _delta_ratio(bar)
     return _Bar(
         index=bar["index"],
         time=bar["time"],
@@ -76,7 +84,22 @@ def _prepare(doc: dict, bar: dict) -> _Bar:
         partial=any(c.get("hidden") for c in bar["cells"]),
         touches_view_edge=edge,
         ohlc=ohlc if ohlc and ohlc["valid"] else None,
+        delta_ratio=ratio,
+        delta_ratio_source=source,
+        platform_divergence=bar.get("platform_divergence"),
     )
+
+
+def _delta_ratio(bar: dict) -> tuple[float | None, str | None]:
+    """Net delta as a share of the bar's volume (-1..1). The chart's own Delta % row is used when it has one:
+    it carries two more significant digits than the rounded volume and delta it is made from."""
+    pct = bar.get("delta_pct")
+    if pct and pct.get("value") is not None:
+        return pct["value"] / 100.0, "shown"
+    vol, dlt = bar["volume"]["value"], bar["delta"]["value"]
+    if vol and dlt is not None:
+        return dlt / vol, "computed"
+    return None, None
 
 
 def _signal(kind: str, bias: str, location: str, price: float, strength: float, evidence: dict, text: str,
@@ -205,15 +228,72 @@ def candle_signals(bar: _Bar, cfg: Thresholds) -> list[dict]:
         out.append(_signal("rejection", "bullish", "low", o["low_row"], lower,
                            {"wick_share": round(lower, 3), "close_location": round((o["close"] - o["low"]) / rng, 3)},
                            "long lower wick: lower prices were rejected"))
-    if bar.volume and body >= cfg.divergence_min_body_share:
-        ratio = bar.delta / bar.volume
+    if bar.delta_ratio is not None and body >= cfg.divergence_min_body_share:
+        ratio = bar.delta_ratio
         if abs(ratio) >= cfg.divergence_min_delta_ratio and ((o["direction"] == "up" and ratio < 0) or (o["direction"] == "down" and ratio > 0)):
             up = o["direction"] == "up"
             out.append(_signal(
                 "delta_divergence", "bearish" if up else "bullish", "bar", o["close"], abs(ratio) / 0.3,
-                {"direction": o["direction"], "delta": bar.delta, "delta_ratio": round(ratio, 3), "body_share": round(body, 3)},
+                {"direction": o["direction"], "delta": bar.delta, "delta_ratio": round(ratio, 4), "body_share": round(body, 3),
+                 "delta_ratio_source": bar.delta_ratio_source, "platform_marker": bar.platform_divergence},
                 f"price closed {'up' if up else 'down'} but net delta was {'negative' if up else 'positive'}",
             ))
+    return out
+
+
+def delta_dominance(bar: _Bar, cfg: Thresholds) -> list[dict]:
+    """A bar whose net delta is a large share of its volume: one side did most of the aggressive trading.
+
+    Uses the chart's Delta % (delta / volume) when shown. Strength grows linearly from the minimum ratio's
+    share to `dominance_full_ratio`. When the candle closed against the delta the signal says so (that is also a
+    `delta_divergence`) and its confidence is lowered, since aggression that did not move price is absorbed.
+    """
+    ratio = bar.delta_ratio
+    if ratio is None or abs(ratio) < cfg.dominance_min_ratio:
+        return []
+    buy = ratio > 0
+    o = bar.ohlc
+    against = bool(o and ((o["direction"] == "up" and not buy) or (o["direction"] == "down" and buy)))
+    evidence = {"delta": bar.delta, "volume": bar.volume, "delta_pct": round(100 * ratio, 2),
+                "delta_pct_source": bar.delta_ratio_source}
+    if o:
+        evidence["candle_direction"] = o["direction"]
+    price = o["close"] if o else (bar.poc if bar.poc is not None else 0.0)
+    text = f"{'buyers' if buy else 'sellers'} were {abs(ratio) * 100:.0f}% of the bar's net volume"
+    if against:
+        text += ", yet the candle closed against them"
+    return [_signal("delta_dominance", "bullish" if buy else "bearish", "bar", price, abs(ratio) / cfg.dominance_full_ratio,
+                    evidence, text, confidence=0.6 if against else 1.0 if not bar.partial else cfg.partial_confidence)]
+
+
+def flow_runs(bars: list[_Bar], cfg: Thresholds) -> dict:
+    """Net delta as a share of volume bar by bar, and the current run of same-sided bars.
+
+    A run is consecutive bars (no gaps) whose |delta %| is at least `flow_min_ratio` with the same sign; one that
+    ends at the last analysed bar and has at least `flow_min_bars` bars is `persistent_delta` evidence that the
+    same side has been the aggressor for a while.
+    """
+    series = [{"index": b.index, "delta_pct": None if b.delta_ratio is None else round(100 * b.delta_ratio, 2),
+               "source": b.delta_ratio_source} for b in bars]
+    run: list[_Bar] = []
+    for b in bars:
+        r = b.delta_ratio
+        if r is None or abs(r) < cfg.flow_min_ratio:
+            run = []
+            continue
+        if run and (b.index != run[-1].index + 1 or (r > 0) != (run[-1].delta_ratio > 0)):
+            run = []
+        run.append(b)
+    out: dict = {"series": series, "run": None}
+    if len(run) >= cfg.flow_min_bars and run[-1].index == bars[-1].index:
+        avg = float(np.mean([b.delta_ratio for b in run]))
+        out["run"] = {
+            "bias": "bullish" if avg > 0 else "bearish",
+            "bars": len(run), "from_index": run[0].index, "to_index": run[-1].index,
+            "mean_delta_pct": round(100 * avg, 2),
+            "text": f"{len(run)} consecutive bars with {'positive' if avg > 0 else 'negative'} delta "
+                    f"(mean {100 * avg:+.1f}% of volume)",
+        }
     return out
 
 
@@ -311,13 +391,15 @@ def analyze(doc: dict, cfg: Thresholds | None = None) -> dict:
         nxt = later[0] if later and later[0].index == prep.index + 1 else None
         signals = (
             stacked_imbalances(prep, step, cfg) + extreme_signals(prep, nxt, cfg, step)
-            + candle_signals(prep, cfg) + poc_signal(prep)
+            + candle_signals(prep, cfg) + delta_dominance(prep, cfg) + poc_signal(prep)
         )
         prices = [c["price"] for c in prep.rows]
         stats = {
             "volume": prep.volume,
             "delta": prep.delta,
-            "delta_ratio": None if not prep.volume else round(prep.delta / prep.volume, 3),
+            "delta_ratio": None if prep.delta_ratio is None else round(prep.delta_ratio, 4),
+            "delta_ratio_source": prep.delta_ratio_source,
+            "platform_divergence": prep.platform_divergence,
             "range": [min(prices), max(prices)] if prices else None,
             "traded_rows": len(prep.rows),
             "poc": prep.poc,
@@ -360,6 +442,7 @@ def analyze(doc: dict, cfg: Thresholds | None = None) -> dict:
         "bars": out_bars,
         "levels": levels,
         "profile": prof,
+        "flow": flow_runs(usable, cfg),
         "summary": {
             "analyzed_bars": len(analyzed),
             "excluded_bars": [b["index"] for b in out_bars if b["status"] == "excluded"],

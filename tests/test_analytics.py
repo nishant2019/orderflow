@@ -412,3 +412,76 @@ def test_current_price_line_is_preferred_over_the_last_close():
     d["bars"] = [bar(0, [cell(100 + k, 600, 700) for k in range(8)], poc=104)]
     lv = next(lv for lv in analyze(d)["levels"] if lv["price"] == 104.0)
     assert lv["role"] == "support" and lv["distance_steps"] == -7.0  # measured from 111, not 104
+
+
+# --- delta % (net delta as a share of volume) ----------------------------------------------------
+
+def ratio_bar(index, ratio, candle=None, shown=False, volume=10000.0):
+    """A bar whose net delta is `ratio` of its volume (cells are irrelevant to these detectors)."""
+    cells = [cell(100 + k, 1000 * (1 - ratio), 1000 * (1 + ratio)) for k in range(5)]
+    b = bar(index, cells, poc=102.0, candle=candle)
+    b["volume"] = {"value": volume}
+    b["delta"] = {"value": ratio * volume}
+    if shown:
+        b["delta_pct"] = {"value": round(100 * ratio, 2), "text": f"{abs(100 * ratio):.2f}%"}
+    return b
+
+
+def test_delta_dominance_needs_a_large_delta_share():
+    r = analyze(doc(ratio_bar(0, 0.45), ratio_bar(1, -0.5), ratio_bar(2, 0.1)))
+    assert [s["bias"] for s in signals(r, 0, "delta_dominance")] == ["bullish"]
+    assert [s["bias"] for s in signals(r, 1, "delta_dominance")] == ["bearish"]
+    assert signals(r, 2, "delta_dominance") == []
+    s = signals(r, 0, "delta_dominance")[0]
+    assert s["evidence"]["delta_pct"] == 45.0 and s["evidence"]["delta_pct_source"] == "computed"
+    assert signals(r, 1, "delta_dominance")[0]["strength"] > s["strength"]
+
+
+def test_the_charts_delta_pct_is_used_when_shown():
+    b = ratio_bar(0, 0.4, shown=True)
+    b["delta_pct"]["value"] = 41.37  # more precise than the rounded volume and delta it is made from
+    r = analyze(doc(b))
+    s = signals(r, 0, "delta_dominance")[0]
+    assert s["evidence"]["delta_pct"] == 41.37 and s["evidence"]["delta_pct_source"] == "shown"
+    assert next(x for x in r["bars"] if x["index"] == 0)["stats"]["delta_ratio_source"] == "shown"
+
+
+def test_dominance_against_the_candle_lowers_confidence():
+    up = ohlc(100, 106, 99, 105)
+    agree = signals(analyze(doc(ratio_bar(0, 0.5, candle=up))), 0, "delta_dominance")[0]
+    against = signals(analyze(doc(ratio_bar(0, -0.5, candle=up))), 0, "delta_dominance")[0]
+    assert agree["confidence"] == 1.0 and against["confidence"] < agree["confidence"]
+    assert "against" in against["text"]
+
+
+def test_dominance_threshold_is_configurable():
+    d = doc(ratio_bar(0, 0.2))
+    assert signals(analyze(d), 0, "delta_dominance") == []
+    assert signals(analyze(d, Thresholds(dominance_min_ratio=0.15)), 0, "delta_dominance")
+
+
+def test_persistent_delta_run_ends_at_the_last_bar():
+    r = analyze(doc(ratio_bar(0, -0.3), ratio_bar(1, 0.15), ratio_bar(2, 0.2), ratio_bar(3, 0.25)))
+    run = r["flow"]["run"]
+    assert run["bias"] == "bullish" and run["bars"] == 3 and (run["from_index"], run["to_index"]) == (1, 3)
+    assert run["mean_delta_pct"] == pytest.approx(20.0)
+    assert [x["delta_pct"] for x in r["flow"]["series"]] == [-30.0, 15.0, 20.0, 25.0]
+
+
+def test_no_run_when_the_sign_flips_or_it_is_too_short_or_weak():
+    assert analyze(doc(ratio_bar(0, 0.2), ratio_bar(1, 0.2), ratio_bar(2, -0.2)))["flow"]["run"] is None
+    assert analyze(doc(ratio_bar(0, 0.2), ratio_bar(1, 0.2)))["flow"]["run"] is None
+    assert analyze(doc(ratio_bar(0, 0.05), ratio_bar(1, 0.06), ratio_bar(2, 0.04)))["flow"]["run"] is None
+    # a gap (an excluded bar) breaks the run
+    assert analyze(doc(ratio_bar(0, 0.2), ratio_bar(1, 0.2, ), ratio_bar(3, 0.2)))["flow"]["run"] is None
+
+
+def test_real_shots3_chart_uses_the_shown_delta_pct():
+    from orderflow.assemble import parse_screenshot
+
+    d = parse_screenshot(DATA.parents[1] / "shots3" / "AARTIIND_06-10-26.png")
+    a = analyze(d)
+    assert [x["source"] for x in a["flow"]["series"]] == ["shown"] * 8
+    assert [x["delta_pct"] for x in a["flow"]["series"]] == [31.02, 9.4, -45.17, 12.09, -44.78, 0.91, 35.04, -60.96]
+    kinds = {i: [s["bias"] for s in signals(a, i, "delta_dominance")] for i in range(8)}
+    assert kinds[0] == ["bullish"] and kinds[2] == ["bearish"] and kinds[7] == ["bearish"] and kinds[5] == []

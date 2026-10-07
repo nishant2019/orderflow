@@ -97,8 +97,14 @@ When a check fails the data is flagged, never silently accepted. Two repairs use
 
 Rule-based, on the parsed JSON, only on validated bars. Every signal has numeric evidence, a strength and a
 confidence. Per bar: `stacked_imbalance`, `absorption` (with next-bar confirmation), `exhaustion`,
-`unfinished/finished_extreme`, `rejection` (wick), `delta_divergence`, `poc`. Cross-bar: support/resistance
+`unfinished/finished_extreme`, `rejection` (wick), `delta_divergence`, `delta_dominance`, `poc`. Cross-bar: support/resistance
 `levels` clustered from bar POCs, imbalances, absorption **and the volume profile**.
+
+**Delta %** (net delta as a share of the bar's volume; the chart's own Delta % row when it has one, else computed):
+`delta_dominance` flags a bar where one side did at least 30 % of the net volume (confidence lowered when the candle
+closed against it); `delta_divergence` uses it too and reports whether it was shown or computed and the platform's own
+marker; `analysis.flow` gives the series bar by bar and the current run of same-sided bars (`persistent_delta`
+evidence, 3 or more consecutive bars ending at the last one).
 
 Volume profile (`analysis.profile`): POC (share of volume, delta at POC), value area (colour-coded by the chart),
 last close vs value area, high/low volume nodes, thin tails, rows of one-sided aggression, shape (P / b / D),
