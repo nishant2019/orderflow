@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Black Areas Detector (footprint POC boxes)
 // @namespace    orderflow
-// @version      0.1.0
+// @version      0.1.1
 // @description  Finds solid-black and black-outlined rectangles (e.g. the POC box of a footprint chart) on the page's
 //               charts, many times a second, and outlines them. Everything runs in your browser; nothing is sent anywhere.
 // @match        https://gocharting.com/terminal/*
@@ -177,6 +177,7 @@
     const w = Math.max(1, Math.round(sw * scale)), h = Math.max(1, Math.round(sh * scale));
     if (!scratch.c) { scratch.c = document.createElement("canvas"); scratch.g = scratch.c.getContext("2d", { willReadFrequently: true }); }
     if (scratch.c.width !== w || scratch.c.height !== h) { scratch.c.width = w; scratch.c.height = h; }
+    scratch.g.clearRect(0, 0, w, h); // the scratch canvas is shared: without this, the previous canvas shows through transparent areas
     scratch.g.drawImage(source, 0, 0, w, h);
     return { image: scratch.g.getImageData(0, 0, w, h), w, h, sw, sh };
   }

@@ -89,3 +89,18 @@ def test_detection_is_fast(page):
         for (let k = 0; k < 10; k++) BlackAreasCore.detectBlackAreas(data, w, h, {});
         return (performance.now() - t0) / 10; }""")
     assert ms < 30, f"{ms:.1f} ms per 1800x860 scan"
+
+
+def test_a_previous_canvas_does_not_bleed_into_the_next_scan(page):
+    """Pages draw a chart in several stacked, partly transparent canvases and the detector scans them one after
+    another through one scratch canvas: a transparent canvas must come back empty, not show the previous one."""
+    res = page.evaluate("""() => {
+        const make = (draw) => { const c = document.createElement('canvas'); c.width = 600; c.height = 300; draw(c.getContext('2d')); return c; };
+        const withBox = make((g) => { g.fillStyle = '#fff'; g.fillRect(0, 0, 600, 300); g.fillStyle = '#000'; g.fillRect(100, 100, 90, 14); });
+        const empty = make(() => {});                                    // fully transparent
+        const textOnly = make((g) => { g.fillStyle = '#000'; g.font = '12px sans-serif'; g.fillText('1,980 2,000', 20, 40); });
+        const r1 = BlackAreasCore.scanSource(withBox, {}).boxes.length;
+        const r2 = BlackAreasCore.scanSource(empty, {}).boxes.length;      // would still see the first canvas's box
+        const r3 = BlackAreasCore.scanSource(textOnly, {}).boxes.length;   // text is not an area
+        return [r1, r2, r3]; }""")
+    assert res == [1, 0, 0]
