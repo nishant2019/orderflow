@@ -32,6 +32,33 @@ only the standard library, answers one request at a time per CPU-heavy read (2 a
 keeps nothing: uploaded pictures live in a temporary folder for the duration of the read. It is a local prototype -
 do not put it on the internet. The same function is available as `orderflow.webapp.read_chart(bytes, filename)`.
 
+## Browser detector for black areas (`browser/black-areas.js`)
+
+A single dependency-free script that runs **inside the trading page** and outlines black areas on the chart canvas a few
+times a second: solid black boxes (a filled POC box) in magenta and black-outlined frames (the POC rectangle of the
+split layout) in cyan. Nothing leaves the browser.
+
+* **Install:** in Tampermonkey / Violentmonkey create a new script, paste the file, and change the `@match` line to the
+  site you trade on. Or paste the whole file into the browser console for a one-off run.
+* **HUD** (top right): count, scan time, *Pause*, *Capture tab*, *Copy JSON*. **API:** `blackAreas.last` (boxes with
+  canvas and page coordinates), `blackAreas.onChange(fn)`, `document` event `blackareas`, `blackAreas.options = {...}`
+  (`maxChannel` = how dark counts as black, `minWidth`/`minHeight`, `scale` 0.5 for ~2x faster, `intervalMs`, `roi`).
+* **How it works:** every row is scanned for black runs (one bit-mask per pixel), runs are joined across rows
+  (union-find) into areas, and a frame is found from a horizontal edge with two black sides hanging from it (so frames
+  that touch, or whose bottom edge is hidden by a price line, still work). Transparent pixels are never black.
+* **Measured** (headless Chromium, software rendering, 1800x860 canvas): detection itself 4-7 ms; reading the canvas
+  (`getImageData`) 15-35 ms, so a scan is about 20-60 ms and the default rate is 4 per second. On your page the numbers
+  depend on the GPU and the canvas.
+* **Accuracy:** on your screenshot (`tests/data/black_solid_poc.png`) both solid POC boxes are found exactly. For black
+  frames, against the Python reader on 9 charts: 79 of 98 frames found (81 %) and 2 boxes that are not frames; misses are
+  frames with both edges partly hidden and the cut-off first bar.
+* **Limits:** a canvas that holds cross-origin pictures is "tainted" and cannot be read: the HUD then says so, and
+  *Capture tab* (the browser asks which tab to share) scans a video of the tab instead and shows the result in a preview.
+  A WebGL chart that clears its buffer after drawing may read back blank; the same fallback applies. A chart drawn with
+  HTML/SVG elements instead of a canvas is not scanned.
+* **Try it:** open `browser/demo.html`, choose a screenshot. `tests/test_black_areas.py` runs the detector in headless
+  Chromium (skipped when Playwright is not installed).
+
 ## Two chart layouts
 
 | | **split** (the main source) | single (older samples) |

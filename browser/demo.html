@@ -1,0 +1,18 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><title>Black areas demo</title>
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<style>body{margin:0;font:14px system-ui;background:#f4f5f7;color:#1c2330}main{padding:16px}canvas{max-width:100%;border:1px solid #ccd}</style></head>
+<body><main>
+<h1 style="font-size:18px;margin:0 0 8px">Black areas detector: demo</h1>
+<p>Choose a screenshot; it is drawn on a canvas and the detector runs on it, outlining solid black areas (magenta) and
+black-outlined rectangles (cyan). On a real trading page, install <code>black-areas.js</code> as a userscript instead.</p>
+<input type="file" id="f" accept="image/*"> <canvas id="c" width="1" height="1" style="display:block;margin-top:12px"></canvas>
+<script>
+const c = document.getElementById("c");
+document.getElementById("f").onchange = async (e) => {
+  const im = await createImageBitmap(e.target.files[0]);
+  c.width = im.width; c.height = im.height; c.getContext("2d").drawImage(im, 0, 0);
+};
+</script>
+<script src="black-areas.js"></script>
+</main></body></html>
