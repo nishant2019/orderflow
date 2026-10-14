@@ -479,7 +479,10 @@ def test_no_run_when_the_sign_flips_or_it_is_too_short_or_weak():
 def test_real_shots3_chart_uses_the_shown_delta_pct():
     from orderflow.assemble import parse_screenshot
 
-    d = parse_screenshot(DATA.parents[1] / "shots3" / "AARTIIND_06-10-26.png")
+    image = DATA.parents[1] / "shots3" / "AARTIIND_06-10-26.png"
+    if not image.exists():
+        pytest.skip("shots3/ is not in this checkout")
+    d = parse_screenshot(image)
     a = analyze(d)
     assert [x["source"] for x in a["flow"]["series"]] == ["shown"] * 8
     assert [x["delta_pct"] for x in a["flow"]["series"]] == [31.02, 9.4, -45.17, 12.09, -44.78, 0.91, 35.04, -60.96]

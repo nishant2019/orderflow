@@ -85,7 +85,10 @@ def test_body_size_limits(base):
 
 
 def test_a_real_screenshot_returns_parsed_data_and_analysis(base):
-    data = (ROOT / "shots3" / "BHEL_06-10-26.png").read_bytes()
+    image = ROOT / "shots3" / "BHEL_06-10-26.png"
+    if not image.exists():
+        pytest.skip("shots3/ is not in this checkout")
+    data = image.read_bytes()
     status, body = post(base, data, headers={"X-Filename": "my chart <1>.png"})
     assert status == 200
     doc = body["parsed"]

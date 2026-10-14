@@ -9,6 +9,7 @@ import cv2
 
 ROOT = Path(__file__).resolve().parents[1]
 BHEL = ROOT / "shots3" / "BHEL_06-10-26.png"
+pytestmark = pytest.mark.skipif(not BHEL.exists(), reason="shots3/ is not in this checkout")
 PCT = [38.55, 8.9, 5.62, 2.75, 17.52, 9.11, 33.93, -0.28]  # hand-read; the sign follows the delta (red cell)
 
 
