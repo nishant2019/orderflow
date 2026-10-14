@@ -4,7 +4,8 @@
 // @version      0.1.0
 // @description  Finds solid-black and black-outlined rectangles (e.g. the POC box of a footprint chart) on the page's
 //               charts, many times a second, and outlines them. Everything runs in your browser; nothing is sent anywhere.
-// @match        *://*.gocharting.com/*
+// @match        https://gocharting.com/terminal/*
+// @match        https://*.gocharting.com/terminal/*
 // @run-at       document-idle
 // @grant        none
 // ==/UserScript==

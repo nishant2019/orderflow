@@ -38,8 +38,8 @@ A single dependency-free script that runs **inside the trading page** and outlin
 times a second: solid black boxes (a filled POC box) in magenta and black-outlined frames (the POC rectangle of the
 split layout) in cyan. Nothing leaves the browser.
 
-* **Install:** in Tampermonkey / Violentmonkey create a new script, paste the file, and change the `@match` line to the
-  site you trade on. Or paste the whole file into the browser console for a one-off run.
+* **Install:** in Tampermonkey / Violentmonkey create a new script and paste the file in. It is set to run on
+  `https://gocharting.com/terminal/*` (every chart in the terminal); add other sites as extra `@match` lines. Or paste the whole file into the browser console for a one-off run.
 * **HUD** (top right): count, scan time, *Pause*, *Capture tab*, *Copy JSON*. **API:** `blackAreas.last` (boxes with
   canvas and page coordinates), `blackAreas.onChange(fn)`, `document` event `blackareas`, `blackAreas.options = {...}`
   (`maxChannel` = how dark counts as black, `minWidth`/`minHeight`, `scale` 0.5 for ~2x faster, `intervalMs`, `roi`).
