@@ -121,7 +121,7 @@ def test_colors_can_be_chosen(page):
     green = scan(page, image, roi, colors=["darkgreen"])["boxes"]
     assert {b["color"] for b in both} == {"black", "darkgreen"}
     assert [(b["x"], b["y"], b["w"], b["h"]) for b in black] == [(792, 400, 85, 12), (386, 452, 85, 10)]
-    assert [(b["x"], b["y"]) for b in green] == [(81, 413)]
+    assert [(b["x"], b["y"]) for b in green] == [(81, 412), (182, 438)]
 
 
 def test_both_colours_scan_is_still_fast(page):
@@ -131,3 +131,10 @@ def test_both_colours_scan_is_still_fast(page):
         for (let k = 0; k < 10; k++) BlackAreasCore.detectAreas(data, w, h, {});
         return (performance.now() - t0) / 10; }""")
     assert ms < 40, f"{ms:.1f} ms per 1800x860 scan for both colours"
+
+
+def test_the_mid_dark_green_of_the_second_candle(page):
+    """(0, 136, 0) is the next step up the buy scale from (0, 83, 0): included; the light greens and the teal candles are not."""
+    r = scan(page, ROOT / "tests" / "data" / "green_second_candle.png", {"x": 0, "y": 46, "w": 840, "h": 600})
+    got = [(b["x"], b["y"], b["w"], b["h"], b["color"]) for b in r["boxes"]]
+    assert got == [(119, 356, 59, 36, "darkgreen")]

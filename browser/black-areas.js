@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Black & Dark-Green Areas Detector (footprint POC boxes)
 // @namespace    orderflow
-// @version      0.2.0
+// @version      0.2.1
 // @description  Finds solid-black and black-outlined rectangles (e.g. the POC box of a footprint chart) on the page's
 //               charts, many times a second, and outlines them. Everything runs in your browser; nothing is sent anywhere.
 // @match        https://gocharting.com/terminal/*
@@ -19,8 +19,8 @@
   const DEFAULTS = {
     colors: ["black", "darkgreen"], // which areas to look for ("black" areas also get outline/frame detection)
     maxChannel: 64,      // a pixel is "black" when R, G and B are all below this (0-255)
-    dgMinGreen: 48, dgMaxGreen: 125, // "dark green": G in this range ...
-    dgMaxOther: 60, dgDominance: 40, // ... R and B below dgMaxOther, and G at least dgDominance above both (0,83,0 is the dark end of the buy scale)
+    dgMinGreen: 48, dgMaxGreen: 150, // "dark green": G in this range ...
+    dgMaxOther: 60, dgDominance: 40, // ... R and B below dgMaxOther, and G at least dgDominance above both (0,83,0 to 0,136,0: the dark half of the buy scale; 18,170,13 is excluded)
     minWidth: 24,        // px (in the scanned image) of the smallest area reported
     minHeight: 8,
     minFill: 0.55,       // black pixels / box area at or above this: a solid area

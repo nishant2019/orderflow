@@ -36,7 +36,8 @@ do not put it on the internet. The same function is available as `orderflow.weba
 
 A single dependency-free script that runs **inside the trading page** and outlines black areas on the chart canvas a few
 times a second: solid black boxes (a filled POC box) in magenta, black-outlined frames (the POC rectangle of the
-split layout) in cyan and **dark green** boxes (the dark end of the buy colour scale, RGB about 0,83,0) in amber.
+split layout) in cyan and **dark green** boxes (the dark half of the buy colour scale, RGB from about 0,83,0 to 0,136,0; the bright green
+18,170,13 and the light greens are not matched) in amber. Stacked cells of the same colour merge into one box.
 Nothing leaves the browser. Choose what to look for with `blackAreas.options = {colors: ["black"]}` (default
 `["black", "darkgreen"]`); the thresholds for dark green are `dgMinGreen`, `dgMaxGreen`, `dgMaxOther`, `dgDominance`.
 
