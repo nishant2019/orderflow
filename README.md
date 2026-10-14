@@ -32,11 +32,13 @@ only the standard library, answers one request at a time per CPU-heavy read (2 a
 keeps nothing: uploaded pictures live in a temporary folder for the duration of the read. It is a local prototype -
 do not put it on the internet. The same function is available as `orderflow.webapp.read_chart(bytes, filename)`.
 
-## Browser detector for black areas (`browser/black-areas.js`)
+## Browser detector for black and dark-green areas (`browser/black-areas.js`)
 
 A single dependency-free script that runs **inside the trading page** and outlines black areas on the chart canvas a few
-times a second: solid black boxes (a filled POC box) in magenta and black-outlined frames (the POC rectangle of the
-split layout) in cyan. Nothing leaves the browser.
+times a second: solid black boxes (a filled POC box) in magenta, black-outlined frames (the POC rectangle of the
+split layout) in cyan and **dark green** boxes (the dark end of the buy colour scale, RGB about 0,83,0) in amber.
+Nothing leaves the browser. Choose what to look for with `blackAreas.options = {colors: ["black"]}` (default
+`["black", "darkgreen"]`); the thresholds for dark green are `dgMinGreen`, `dgMaxGreen`, `dgMaxOther`, `dgDominance`.
 
 * **Install:** in Tampermonkey / Violentmonkey create a new script and paste the file in. It is set to run on
   `https://gocharting.com/terminal/*` (every chart in the terminal); add other sites as extra `@match` lines. Or paste the whole file into the browser console for a one-off run.
@@ -46,7 +48,7 @@ split layout) in cyan. Nothing leaves the browser.
 * **How it works:** every row is scanned for black runs (one bit-mask per pixel), runs are joined across rows
   (union-find) into areas, and a frame is found from a horizontal edge with two black sides hanging from it (so frames
   that touch, or whose bottom edge is hidden by a price line, still work). Transparent pixels are never black.
-* **Measured** (headless Chromium, software rendering, 1800x860 canvas): detection itself 4-7 ms; reading the canvas
+* **Measured** (headless Chromium, software rendering, 1800x860 canvas): detection itself about 8 ms per colour (16 ms for black and dark green); reading the canvas
   (`getImageData`) 15-35 ms, so a scan is about 20-60 ms and the default rate is 4 per second. On your page the numbers
   depend on the GPU and the canvas.
 * **Accuracy:** on your screenshot (`tests/data/black_solid_poc.png`) both solid POC boxes are found exactly. For black

@@ -1,7 +1,7 @@
 // ==UserScript==
-// @name         Black Areas Detector (footprint POC boxes)
+// @name         Black & Dark-Green Areas Detector (footprint POC boxes)
 // @namespace    orderflow
-// @version      0.1.1
+// @version      0.2.0
 // @description  Finds solid-black and black-outlined rectangles (e.g. the POC box of a footprint chart) on the page's
 //               charts, many times a second, and outlines them. Everything runs in your browser; nothing is sent anywhere.
 // @match        https://gocharting.com/terminal/*
@@ -17,7 +17,10 @@
   "use strict";
 
   const DEFAULTS = {
+    colors: ["black", "darkgreen"], // which areas to look for ("black" areas also get outline/frame detection)
     maxChannel: 64,      // a pixel is "black" when R, G and B are all below this (0-255)
+    dgMinGreen: 48, dgMaxGreen: 125, // "dark green": G in this range ...
+    dgMaxOther: 60, dgDominance: 40, // ... R and B below dgMaxOther, and G at least dgDominance above both (0,83,0 is the dark end of the buy scale)
     minWidth: 24,        // px (in the scanned image) of the smallest area reported
     minHeight: 8,
     minFill: 0.55,       // black pixels / box area at or above this: a solid area
@@ -36,8 +39,9 @@
   // ---------------------------------------------------------------------------------------------
   // The detector: pure function of pixels. Black runs per row -> union-find across rows -> boxes.
   // ---------------------------------------------------------------------------------------------
-  function detectBlackAreas(data, width, height, opts) {
-    const o = Object.assign({}, DEFAULTS, opts || {});
+  function detectOne(data, width, height, o, color) {
+    const isBlackColor = color === "black";
+    const dgMinG = o.dgMinGreen, dgMaxG = o.dgMaxGreen, dgMaxO = o.dgMaxOther, dgDom = o.dgDominance, dgFast = o.dgMaxOther <= 64;
     const t = o.maxChannel;
     // "all channels < t" for t a power of two is one AND on the packed pixel: no channel of the mask bits may be set
     const pow2 = (t & (t - 1)) === 0;
@@ -63,7 +67,15 @@
       let i = (y * width + x0) * 4, runFrom = -1, pi = y * width + x0;
       for (let x = x0; x <= x1; x++, i += 4, pi++) {
         // transparent pixels (0,0,0,0) of a layered canvas are not black: require a mostly opaque pixel
-        const black = x < x1 && (pow2 ? ((px[pi] & mask) === 0 && (px[pi] & 0x80000000) !== 0) : (data[i] < t && data[i + 1] < t && data[i + 2] < t && data[i + 3] > 127));
+        let black;
+        if (x >= x1) black = false;
+        else if (isBlackColor) black = pow2 ? ((px[pi] & mask) === 0 && (px[pi] & 0x80000000) !== 0) : (data[i] < t && data[i + 1] < t && data[i + 2] < t && data[i + 3] > 127);
+        else if (dgFast && (px[pi] & 0x00C000C0) !== 0) black = false; // R or B already >= 64 (one AND rejects most pixels)
+        else {
+          const g = data[i + 1];
+          black = g >= dgMinG && g < dgMaxG && data[i] < dgMaxO && data[i + 2] < dgMaxO &&
+            g - data[i] >= dgDom && g - data[i + 2] >= dgDom && data[i + 3] > 127;
+        }
         if (black) { if (runFrom < 0) runFrom = x; }
         else if (runFrom >= 0) {
           if (x - runFrom >= o.minRun) {
@@ -108,6 +120,8 @@
       const fill = c.area / (w * h);
       if (fill >= o.minFill) out.push({ x: c.x0, y: c.y0, w, h, kind: "solid", fill: +fill.toFixed(3) });
     }
+
+    if (!isBlackColor) { out.sort((a, b) => a.y - b.y || a.x - b.x); return out; }
 
     // ---- outlines (hollow rectangles, e.g. the POC box drawn as a black frame) -----------------------------------
     // Neighbouring frames touch and merge into one blob, and a price line may cross a side, so a whole-blob test
@@ -169,6 +183,20 @@
     return out;
   }
 
+  // All requested colours: each gets its own pass; boxes carry `color`.
+  function detectAreas(data, width, height, opts) {
+    const o = Object.assign({}, DEFAULTS, opts || {});
+    const all = [];
+    for (const color of o.colors) for (const b of detectOne(data, width, height, o, color)) { b.color = color; all.push(b); }
+    all.sort((a, b) => a.y - b.y || a.x - b.x);
+    if (o.debug && all.length === 0) all.debugEdges = [];
+    return all;
+  }
+  // the original single-colour entry point
+  function detectBlackAreas(data, width, height, opts) {
+    return detectAreas(data, width, height, Object.assign({}, opts || {}, { colors: ["black"] }));
+  }
+
   // scan a canvas / video / image element (draws it to a scratch canvas first: works for 2D and WebGL canvases)
   const scratch = { c: null, g: null };
   function grab(source, scale) {
@@ -191,13 +219,13 @@
       minWidth: Math.max(2, Math.round(o.minWidth * k)), minHeight: Math.max(2, Math.round(o.minHeight * k)),
       roi: o.roi ? { x: o.roi.x * k, y: o.roi.y * k, w: o.roi.w * k, h: o.roi.h * k } : null,
     });
-    const boxes = detectBlackAreas(image.data, w, h, sc).map((b) => ({
-      x: Math.round(b.x / k), y: Math.round(b.y / k), w: Math.round(b.w / k), h: Math.round(b.h / k), kind: b.kind, fill: b.fill,
+    const boxes = detectAreas(image.data, w, h, sc).map((b) => ({
+      x: Math.round(b.x / k), y: Math.round(b.y / k), w: Math.round(b.w / k), h: Math.round(b.h / k), kind: b.kind, fill: b.fill, color: b.color,
     }));
     return { boxes, ms: performance.now() - t0, width: sw, height: sh };
   }
 
-  const api = { detectBlackAreas, scanSource, DEFAULTS };
+  const api = { detectBlackAreas, detectAreas, scanSource, DEFAULTS };
   if (typeof module !== "undefined" && module.exports) module.exports = api;
   root.BlackAreasCore = api;
 })(typeof window !== "undefined" ? window : globalThis);
@@ -245,9 +273,9 @@
     g.lineWidth = 2; g.font = "11px system-ui, sans-serif"; g.textBaseline = "top";
     for (const b of boxes) {
       const x = b.x * sx, y = b.y * sy, w = b.w * sx, h = b.h * sy;
-      g.strokeStyle = b.kind === "solid" ? "#ff2bd6" : "#00e5ff";
+      g.strokeStyle = b.color === "darkgreen" ? "#ffb000" : b.kind === "solid" ? "#ff2bd6" : "#00e5ff";
       g.strokeRect(x - 2, y - 2, w + 4, h + 4);
-      const label = b.kind + " " + b.w + "×" + b.h;
+      const label = (b.color === "darkgreen" ? "dark green " : "") + b.kind + " " + b.w + "×" + b.h;
       const tw = g.measureText(label).width + 6;
       g.fillStyle = g.strokeStyle; g.fillRect(x - 2, y - 15, tw, 13);
       g.fillStyle = "#000"; g.fillText(label, x + 1, y - 14);
@@ -343,7 +371,7 @@
       state.hud = sh;
     }
     const sh = state.hud;
-    sh.getElementById("t").innerHTML = `<b>${state.last.length}</b> black area${state.last.length === 1 ? "" : "s"} · ${state.lastMs.toFixed(1)} ms · ${state.mode}`;
+    sh.getElementById("t").innerHTML = `<b>${state.last.length}</b> area${state.last.length === 1 ? "" : "s"} · ${state.lastMs.toFixed(1)} ms · ${state.mode}`;
     sh.getElementById("e").textContent = state.error || "";
   }
 

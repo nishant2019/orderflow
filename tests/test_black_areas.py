@@ -40,7 +40,7 @@ def scan(page, image: Path, roi, **opts):
 
 
 def test_solid_black_poc_boxes_of_the_trading_page_screenshot(page):
-    r = scan(page, ROOT / "tests" / "data" / "black_solid_poc.png", {"x": 0, "y": 46, "w": 1790, "h": 600})
+    r = scan(page, ROOT / "tests" / "data" / "black_solid_poc.png", {"x": 0, "y": 46, "w": 1790, "h": 600}, colors=["black"])
     got = [(b["x"], b["y"], b["w"], b["h"], b["kind"]) for b in r["boxes"]]
     assert got == [(792, 400, 85, 12, "solid"), (386, 452, 85, 10, "solid")]
 
@@ -104,3 +104,30 @@ def test_a_previous_canvas_does_not_bleed_into_the_next_scan(page):
         const r3 = BlackAreasCore.scanSource(textOnly, {}).boxes.length;   // text is not an area
         return [r1, r2, r3]; }""")
     assert res == [1, 0, 0]
+
+
+def test_dark_green_areas(page):
+    """The dark end of the buy colour scale (0, 83, 0) is found; the bright green box next to it is not."""
+    r = scan(page, ROOT / "tests" / "data" / "dark_green_poc.png", {"x": 0, "y": 46, "w": 1280, "h": 600})
+    got = [(b["x"], b["y"], b["w"], b["h"], b["kind"], b["color"]) for b in r["boxes"]]
+    assert got == [(160, 356, 65, 23, "solid", "darkgreen")]
+
+
+def test_colors_can_be_chosen(page):
+    image = ROOT / "tests" / "data" / "black_solid_poc.png"
+    roi = {"x": 0, "y": 46, "w": 1790, "h": 600}
+    both = scan(page, image, roi)["boxes"]
+    black = scan(page, image, roi, colors=["black"])["boxes"]
+    green = scan(page, image, roi, colors=["darkgreen"])["boxes"]
+    assert {b["color"] for b in both} == {"black", "darkgreen"}
+    assert [(b["x"], b["y"], b["w"], b["h"]) for b in black] == [(792, 400, 85, 12), (386, 452, 85, 10)]
+    assert [(b["x"], b["y"]) for b in green] == [(81, 413)]
+
+
+def test_both_colours_scan_is_still_fast(page):
+    ms = page.evaluate("""() => {
+        const w = 1800, h = 860, data = new Uint8ClampedArray(w * h * 4).fill(255);
+        const t0 = performance.now();
+        for (let k = 0; k < 10; k++) BlackAreasCore.detectAreas(data, w, h, {});
+        return (performance.now() - t0) / 10; }""")
+    assert ms < 40, f"{ms:.1f} ms per 1800x860 scan for both colours"
